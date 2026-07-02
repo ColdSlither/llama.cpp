@@ -157,6 +157,12 @@ public:
     // KVzip compression
     void kvzip_compress();
 
+    // RazorAttention — head-type specialization
+    void razor_apply_mask(ggml_tensor * kq_mask) const;
+    void razor_compute_compensation(int n_kv) const;
+    void razor_save_profile(const char * path) const;
+    bool razor_load_profile(const char * path);
+
     uint32_t get_size()     const;
     uint32_t get_n_stream() const;
 

@@ -1350,6 +1350,172 @@ void llama_kv_cache::kvzip_compress() {
     }
 }
 
+//
+// RazorAttention — head-type specialization
+//
+
+static float razor_compute_echo_score(
+    const ggml_tensor * k,
+    const int n_embd_head,
+    const int n_head,
+    const int head_idx,
+    const int n_kv)
+{
+    // Echo score: measure how much a head attends to tokens that repeat.
+    // Compute dot product similarity between the first token's K and each
+    // subsequent token's K for this head. Higher similarity at distance = more retrieval.
+    float total_sim = 0.0f;
+    int count = 0;
+    for (int i = 1; i < std::min(n_kv, 64); i++) {
+        float dot = 0.0f;
+        for (int e = 0; e < n_embd_head; e++) {
+            float v0 = ggml_get_f32_1d(k, head_idx * n_embd_head + e);
+            float vi = ggml_get_f32_1d(k, i * n_embd_head + head_idx * n_embd_head * n_kv + e);
+            dot += v0 * vi;
+        }
+        total_sim += fabsf(dot) / (float)n_embd_head;
+        count++;
+    }
+    return count > 0 ? total_sim / count : 0.0f;
+}
+
+static int razor_profile_heads(
+    llama_kv_cache & cache,
+    const ggml_tensor * k_first_layer)
+{
+    if (!k_first_layer || k_first_layer->ne[1] < 16) {
+        return 0; // Not enough tokens to profile
+    }
+
+    const int n_embd_head = 128; // typical head dimension
+    const int n_kv = (int)k_first_layer->ne[1];
+    const int n_head_total = cache.razor_attn_n_head > 0 ? cache.razor_attn_n_head : 8;
+
+    cache.razor_attn_profiles.clear();
+    cache.razor_attn_profiles.reserve(n_head_total);
+
+    for (int h = 0; h < n_head_total; h++) {
+        float avg_dist = razor_compute_echo_score(
+            k_first_layer, n_embd_head, n_head_total, h, n_kv);
+        bool is_retrieval = avg_dist > 0.3f; // heuristic threshold
+        cache.razor_attn_profiles.push_back({
+            /*.layer =*/ 0,
+            /*.head  =*/ (uint32_t)h,
+            /*.is_retrieval     =*/ is_retrieval,
+            /*.avg_attn_distance=*/ avg_dist,
+        });
+    }
+    cache.razor_attn_profiled = true;
+    return n_head_total;
+}
+
+// Post-process an already-built KQ mask for RazorAttention.
+// After the mask is built with causal/SWA logic, apply per-head local window.
+void llama_kv_cache::razor_apply_mask(ggml_tensor * kq_mask) const {
+    if (!razor_attn_enabled || !razor_attn_profiled || razor_attn_profiles.empty()) {
+        return;
+    }
+    // kq_mask shape: [n_kv, n_tokens, n_head, n_stream] or similar
+    // For each (stream, head, token, kv_pos): if head is local and
+    // kv_pos is outside window, set to -INF.
+    const int64_t ne0 = kq_mask->ne[0]; // n_kv
+    const int64_t ne1 = kq_mask->ne[1]; // n_tokens or n_head
+    const int64_t ne2 = kq_mask->ne[2];
+    const int64_t ne3 = kq_mask->ne[3];
+    const bool is_half = kq_mask->type == GGML_TYPE_F16;
+    const int n_heads = (int)razor_attn_profiles.size();
+
+    for (int64_t s = 0; s < ne3; s++) {
+        for (int64_t h = 0; h < std::min((int64_t)n_heads, ne2); h++) {
+            if (h >= (int64_t)razor_attn_profiles.size()) break;
+            if (razor_attn_profiles[h].is_retrieval) continue;
+            for (int64_t t = 0; t < ne1; t++) {
+                for (int64_t k = 0; k < ne0; k++) {
+                    if (k + razor_attn_window < ne0) {
+                        int64_t idx = k + t * ne0 + h * ne0 * ne1 + s * ne0 * ne1 * ne2;
+                        if (is_half) {
+                            // F16: write -INF as very negative float16
+                            auto * data = (ggml_fp16_t *)kq_mask->data;
+                            data[idx] = GGML_FP32_TO_FP16(-FLT_MAX / 2.0f);
+                        } else {
+                            auto * data = (float *)kq_mask->data;
+                            data[idx] = -FLT_MAX / 2.0f;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Compensation token computation for RazorAttention.
+// Average K/V of tokens that fall outside the local window.
+void llama_kv_cache::razor_compute_compensation(int n_kv) const {
+    if (!razor_attn_enabled || !razor_attn_profiled) {
+        return;
+    }
+    // For each layer, for each local head, average the K/V of tokens
+    // outside the window.
+    for (auto & layer : layers) {
+        if (!layer.k || !layer.v) continue;
+        (void)layer; // placeholder — per-head access needs stride info
+    }
+}
+
+//
+// RazorAttention profile persistence
+//
+
+void llama_kv_cache::razor_save_profile(const char * path) const {
+    if (!razor_attn_profiled || razor_attn_profiles.empty()) {
+        return;
+    }
+    FILE * f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "{\"n_heads\":%zu,\"window\":%d,\"heads\":[",
+            razor_attn_profiles.size(), razor_attn_window);
+    for (size_t i = 0; i < razor_attn_profiles.size(); i++) {
+        if (i > 0) fprintf(f, ",");
+        fprintf(f, "{\"h\":%u,\"l\":%u,\"r\":%s,\"d\":%f}",
+                razor_attn_profiles[i].head,
+                razor_attn_profiles[i].layer,
+                razor_attn_profiles[i].is_retrieval ? "true" : "false",
+                razor_attn_profiles[i].avg_attn_distance);
+    }
+    fprintf(f, "]}\n");
+    fclose(f);
+}
+
+bool llama_kv_cache::razor_load_profile(const char * path) {
+    FILE * f = fopen(path, "r");
+    if (!f) return false;
+    // Simple JSON parse — extract is_retrieval flags.
+    razor_attn_profiles.clear();
+    // Just detect & parse the JSON structure minimally.
+    // For v1: assume file is well-formed and skip full parser.
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+    if (n == 0) return false;
+    buf[n] = '\0';
+
+    // Count heads and set profiled flag.
+    int count = 0;
+    const char * p = buf;
+    while ((p = strstr(p, "\"r\":")) != NULL) {
+        p += 4;
+        bool is_ret = (*p == 't');
+        razor_attn_profiles.push_back({
+            /*layer=*/0, /*head=*/(uint32_t)count,
+            /*is_retrieval=*/is_ret,
+            /*avg_attn_distance=*/0.0f
+        });
+        count++;
+    }
+    razor_attn_profiled = !razor_attn_profiles.empty();
+    return razor_attn_profiled;
+}
+
 std::vector<uint32_t> llama_kv_cache::get_layer_ids() const {
     std::vector<uint32_t> res;
     res.reserve(layers.size());

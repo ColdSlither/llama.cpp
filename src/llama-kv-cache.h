@@ -275,6 +275,11 @@ private:
     float    kvzip_keep_ratio     = 0.33f;
     int      kvzip_trigger        = 512;
 
+    // DepthKV — layer-dependent budgets
+    bool     depthkv_enabled      = false;
+    float    depthkv_min_keep     = 0.20f;
+    float    depthkv_max_keep     = 0.80f;
+
     // RazorAttention state
     bool     razor_attn_enabled   = false;
     int      razor_attn_window    = 2048;

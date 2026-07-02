@@ -1346,8 +1346,70 @@ void llama_kv_cache::kvzip_compress() {
             }
         }
 
-        kvzip_compact(layer.k, layer.v, v_cells[0], kvzip_keep_ratio, n_used);
+        // DepthKV: per-layer compression ratio.
+        float keep = kvzip_keep_ratio;
+        if (depthkv_enabled) {
+            float sens = depthkv_compute_sensitivity(layer.k, layer.v);
+            keep = depthkv_sensitivity_to_keep(sens, depthkv_min_keep, depthkv_max_keep);
+        }
+
+        kvzip_compact(layer.k, layer.v, v_cells[0], keep, n_used);
     }
+}
+
+//
+// DepthKV — layer-dependent compression budgets
+//
+
+static float depthkv_compute_sensitivity(
+    const ggml_tensor * k,
+    const ggml_tensor * v)
+{
+    const int n_kv = (int)std::min(k->ne[1], (int64_t)512);
+    if (n_kv < 4) return 0.5f; // default
+
+    float mean_k = 0.0f, mean_v = 0.0f;
+    for (int i = 0; i < n_kv; i++) {
+        float nk = 0.0f, nv = 0.0f;
+        for (int e = 0; e < k->ne[0]; e++) {
+            float val = ggml_get_f32_1d(k, e + i * k->ne[0]);
+            nk += val * val;
+        }
+        for (int e = 0; e < v->ne[0]; e++) {
+            float val = ggml_get_f32_1d(v, e + i * v->ne[0]);
+            nv += val * val;
+        }
+        mean_k += nk;
+        mean_v += nv;
+    }
+    mean_k /= (float)n_kv;
+    mean_v /= (float)n_kv;
+
+    float var_k = 0.0f, var_v = 0.0f;
+    for (int i = 0; i < n_kv; i++) {
+        float nk = 0.0f, nv = 0.0f;
+        for (int e = 0; e < k->ne[0]; e++) {
+            float val = ggml_get_f32_1d(k, e + i * k->ne[0]);
+            nk += val * val;
+        }
+        for (int e = 0; e < v->ne[0]; e++) {
+            float val = ggml_get_f32_1d(v, e + i * v->ne[0]);
+            nv += val * val;
+        }
+        var_k += (nk - mean_k) * (nk - mean_k);
+        var_v += (nv - mean_v) * (nv - mean_v);
+    }
+    var_k /= (float)n_kv;
+    var_v /= (float)n_kv;
+
+    // Normalize to [0, 1] using sigmoid-like clamp.
+    // Higher variance = more informative = more sensitive to pruning.
+    return std::max(0.0f, std::min(1.0f, (var_k + var_v) / 2.0f));
+}
+
+static float depthkv_sensitivity_to_keep(float sensitivity, float min_keep, float max_keep) {
+    float clamped = std::max(0.0f, std::min(1.0f, sensitivity));
+    return min_keep + clamped * (max_keep - min_keep);
 }
 
 //

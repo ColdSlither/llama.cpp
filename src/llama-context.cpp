@@ -78,6 +78,10 @@ llama_context::llama_context(
     cparams.pooling_type = params.pooling_type;
     cparams.kvzip_enabled = params.kvzip_enabled;
     cparams.kvzip_ratio   = params.kvzip_ratio;
+    cparams.depthkv_enabled = params.depthkv_enabled;
+    cparams.depthkv_min_keep = params.depthkv_min_keep;
+    cparams.depthkv_max_keep = params.depthkv_max_keep;
+
     cparams.razor_attn_enabled = params.razor_attn_enabled;
     cparams.razor_attn_window  = params.razor_attn_window;
     cparams.n_head_kv          = (int)hparams.n_head_kv(0);
@@ -344,6 +348,12 @@ llama_context::llama_context(
         if (kv) {
             kv->kvzip_enabled    = true;
             kv->kvzip_keep_ratio = cparams.kvzip_ratio;
+        if (cparams.depthkv_enabled) {
+            kv->depthkv_enabled  = true;
+            kv->depthkv_min_keep = cparams.depthkv_min_keep;
+            kv->depthkv_max_keep = cparams.depthkv_max_keep;
+        }
+
         }
     }
 

@@ -1509,6 +1509,28 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_RAZOR_ATTN_WINDOW").set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--depthkv"}, {"--no-depthkv"},
+        "enable DepthKV layer-dependent KV budget allocation (default: disabled)",
+        [](common_params & params, bool value) {
+            params.depthkv = value;
+        }
+    ).set_env("LLAMA_ARG_DEPTHKV").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--depthkv-min-keep"}, "F",
+        string_format("DepthKV min keep ratio for resistant layers (default: %.2f)", params.depthkv_min_keep),
+        [](common_params & params, const std::string & value) {
+            params.depthkv_min_keep = std::stof(value);
+        }
+    ).set_env("LLAMA_ARG_DEPTHKV_MIN_KEEP").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--depthkv-max-keep"}, "F",
+        string_format("DepthKV max keep ratio for sensitive layers (default: %.2f)", params.depthkv_max_keep),
+        [](common_params & params, const std::string & value) {
+            params.depthkv_max_keep = std::stof(value);
+        }
+    ).set_env("LLAMA_ARG_DEPTHKV_MAX_KEEP").set_examples({LLAMA_EXAMPLE_SERVER}));
+
+    add_opt(common_arg(
         {"--cache-idle-slots"},
         {"--no-cache-idle-slots"},
         "save idle slots to the prompt cache on new task, and clear them when using unified KV (default: enabled, requires cache-ram)",

@@ -572,7 +572,11 @@ struct common_params {
     float kvzip_ratio      = 0.33f; // KVzip compression ratio
 
     bool razor_attn       = false;  // enable RazorAttention
-    int  razor_attn_window = 2048;  // local window for non-retrieval heads
+    int  razor_attn_window = 2048;
+    bool depthkv           = false;  // enable DepthKV layer budgets
+    float depthkv_min_keep = 0.20f;  // minimum keep ratio (resistant layers)
+    float depthkv_max_keep = 0.80f;  // maximum keep ratio (sensitive layers)
+  // local window for non-retrieval heads
 
     bool input_prefix_bos  = false; // prefix BOS to user inputs, preceding input_prefix
     bool use_mmap          = true;  // enable mmap to use filesystem cache

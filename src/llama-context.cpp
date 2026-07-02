@@ -76,6 +76,8 @@ llama_context::llama_context(
 
     cparams.ctx_type     = params.ctx_type;
     cparams.pooling_type = params.pooling_type;
+    cparams.kvzip_enabled = params.kvzip_enabled;
+    cparams.kvzip_ratio   = params.kvzip_ratio;
 
     cparams.n_ctx            = params.n_ctx           == 0    ? hparams.n_ctx_train           : params.n_ctx;
     cparams.rope_freq_base   = params.rope_freq_base  == 0.0f ? hparams.rope_freq_base_train  : params.rope_freq_base;
@@ -331,6 +333,15 @@ llama_context::llama_context(
         };
 
         memory.reset(model.create_memory(params_mem, cparams));
+    }
+
+    // Wire KVzip parameters into the cache.
+    if (cparams.kvzip_enabled) {
+        auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
+        if (kv) {
+            kv->kvzip_enabled    = true;
+            kv->kvzip_keep_ratio = cparams.kvzip_ratio;
+        }
     }
 
     // init backends
@@ -2218,6 +2229,14 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max);
 
+    // KVzip: compress cache after decode.
+    if (cparams.kvzip_enabled) {
+        auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
+        if (kv) {
+            kv->kvzip_compress();
+        }
+    }
+
     return n_outputs_max;
 }
 
@@ -3483,6 +3502,8 @@ llama_context_params llama_context_default_params() {
         /*.op_offload                  =*/ true,
         /*.swa_full                    =*/ true,
         /*.kv_unified                  =*/ false,
+        /*.kvzip_enabled               =*/ false,
+        /*.kvzip_ratio                 =*/ 0.33f,
         /*.sampler                     =*/ nullptr,
         /*.n_sampler                   =*/ 0,
         /*.ctx_other                   =*/ nullptr,

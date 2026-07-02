@@ -1223,6 +1223,133 @@ ggml_type llama_kv_cache::type_v() const {
     return layers[0].v->type;
 }
 
+//
+// KVzip — query-agnostic KV-cache compression
+//
+
+static void kvzip_score_tokens(
+    const ggml_tensor * k,
+    const ggml_tensor * v,
+    float * scores,
+    int n_kv)
+{
+    const int n_embd_k = k->ne[0];
+    const int n_embd_v = v->ne[0];
+
+    for (int i = 0; i < n_kv; i++) {
+        float sum_k = 0.0f;
+        float sum_v = 0.0f;
+        for (int e = 0; e < n_embd_k; e++) {
+            float val = ggml_get_f32_1d(k, i * n_embd_k + e);
+            sum_k += val * val;
+        }
+        for (int e = 0; e < n_embd_v; e++) {
+            float val = ggml_get_f32_1d(v, i * n_embd_v + e);
+            sum_v += val * val;
+        }
+        scores[i] = sqrtf(sum_k) + sqrtf(sum_v);
+    }
+}
+
+static int kvzip_compact(
+    ggml_tensor * k,
+    ggml_tensor * v,
+    llama_kv_cells & cells,
+    float keep_ratio,
+    int n_kv_used)
+{
+    if (n_kv_used <= 0 || keep_ratio >= 1.0f) {
+        return n_kv_used;
+    }
+
+    const int n_keep = std::max(1, (int)(n_kv_used * keep_ratio));
+    const int n_drop = n_kv_used - n_keep;
+
+    if (n_drop <= 0) {
+        return n_kv_used;
+    }
+
+    // Score tokens.
+    std::vector<float> scores(n_kv_used);
+    kvzip_score_tokens(k, v, scores.data(), n_kv_used);
+
+    // Find top-k indices.
+    std::vector<int> indices(n_kv_used);
+    std::iota(indices.begin(), indices.end(), 0);
+    std::partial_sort(indices.begin(), indices.begin() + n_keep, indices.end(),
+        [&](int a, int b) { return scores[a] > scores[b]; });
+
+    // --- Rearrange K/V by moving top-scored rows to front ---
+    const size_t k_row_size = (size_t)k->ne[0] * ggml_type_size(k->type);
+    const size_t v_row_size = (size_t)v->ne[0] * ggml_type_size(v->type);
+    const size_t k_total = (size_t)k->ne[0] * k->ne[1] * k->ne[2] * ggml_type_size(k->type);
+    const size_t v_total = (size_t)v->ne[0] * v->ne[1] * v->ne[2] * ggml_type_size(v->type);
+
+    std::vector<uint8_t> k_buf(k_total);
+    std::vector<uint8_t> v_buf(v_total);
+
+    ggml_backend_tensor_get(k, k_buf.data(), 0, k_buf.size());
+    ggml_backend_tensor_get(v, v_buf.data(), 0, v_buf.size());
+
+    std::vector<uint8_t> k_new(k_total);
+    std::vector<uint8_t> v_new(v_total);
+
+    // Copy all existing data first (for positions beyond n_kv_used, keep as-is).
+    memcpy(k_new.data(), k_buf.data(), k_total);
+    memcpy(v_new.data(), v_buf.data(), v_total);
+
+    for (int i = 0; i < n_keep; i++) {
+        int src = indices[i];
+        memcpy(&k_new[i * k_row_size], &k_buf[src * k_row_size], k_row_size);
+        memcpy(&v_new[i * v_row_size], &v_buf[src * v_row_size], v_row_size);
+    }
+
+    ggml_backend_tensor_set(k, k_new.data(), 0, k_new.size());
+    ggml_backend_tensor_set(v, v_new.data(), 0, v_new.size());
+
+    // Update cell metadata: compact positions.
+    for (int i = 0; i < n_keep; i++) {
+        int src = indices[i];
+        if (src != i) {
+            cells.pos[i]   = cells.pos[src];
+            cells.ext[i]   = cells.ext[src];
+            cells.shift[i] = cells.shift[src];
+            cells.seq[i]   = cells.seq[src];
+        }
+    }
+
+    return n_keep;
+}
+
+void llama_kv_cache::kvzip_compress() {
+    if (!kvzip_enabled) {
+        return;
+    }
+
+    kvzip_counter++;
+    if (kvzip_counter < kvzip_trigger) {
+        return;
+    }
+    kvzip_counter = 0;
+
+    for (auto & layer : layers) {
+        if (!layer.k || !layer.v) {
+            continue;
+        }
+
+        // Use stream 0 cells to determine used count.
+        const auto & cells = v_cells[0];
+        int n_used = 0;
+        for (size_t i = 0; i < cells.size(); i++) {
+            if (cells.pos[i] >= 0) {
+                n_used++;
+            }
+        }
+
+        kvzip_compact(layer.k, layer.v, v_cells[0], kvzip_keep_ratio, n_used);
+    }
+}
+
 std::vector<uint32_t> llama_kv_cache::get_layer_ids() const {
     std::vector<uint32_t> res;
     res.reserve(layers.size());

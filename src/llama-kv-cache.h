@@ -153,6 +153,9 @@ public:
     // llama_kv_cache specific API
     //
 
+    // KVzip compression
+    void kvzip_compress();
+
     uint32_t get_size()     const;
     uint32_t get_n_stream() const;
 
@@ -258,6 +261,12 @@ private:
 
     // env: LLAMA_KV_CACHE_DEBUG
     int debug = 0;
+
+    // KVzip compression state
+    bool     kvzip_enabled        = false;
+    int      kvzip_counter        = 0;
+    float    kvzip_keep_ratio     = 0.33f;
+    int      kvzip_trigger        = 512;
 
     // this is the SWA type of the cache - not to be confused with the model SWA type
     const llama_swa_type swa_type = LLAMA_SWA_TYPE_NONE;

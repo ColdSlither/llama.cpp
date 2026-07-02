@@ -6,6 +6,7 @@
 #include "llama-impl.h"
 #include "llama-batch.h"
 #include "llama-io.h"
+#include "llama-kv-cache.h"
 #include "llama-memory.h"
 #include "llama-mmap.h"
 #include "llama-model.h"
@@ -352,19 +353,19 @@ llama_context::llama_context(
     if (cparams.kvzip_enabled) {
         auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
         if (kv) {
-            kv->kvzip_enabled    = true;
-            kv->kvzip_keep_ratio = cparams.kvzip_ratio;
+            kv->set_kvzip_enabled(true);
+            kv->set_kvzip_keep_ratio(cparams.kvzip_ratio);
         }
         if (cparams.depthkv_enabled && kv) {
-            kv->depthkv_enabled  = true;
-            kv->depthkv_min_keep = cparams.depthkv_min_keep;
-            kv->depthkv_max_keep = cparams.depthkv_max_keep;
+            kv->set_depthkv_enabled(true);
+            kv->set_depthkv_min_keep(cparams.depthkv_min_keep);
+            kv->set_depthkv_max_keep(cparams.depthkv_max_keep);
         }
         if (cparams.fastkv_enabled && kv) {
-            kv->fastkv_enabled       = true;
-            kv->fastkv_tsp_rate      = cparams.fastkv_tsp_rate;
-            kv->fastkv_tsp_layer     = cparams.fastkv_tsp_layer;
-            kv->fastkv_kv_retention  = cparams.fastkv_kv_retention;
+            kv->set_fastkv_enabled(true);
+            kv->set_fastkv_tsp_rate(cparams.fastkv_tsp_rate);
+            kv->set_fastkv_tsp_layer(cparams.fastkv_tsp_layer);
+            kv->set_fastkv_kv_retention(cparams.fastkv_kv_retention);
         }
     }
 
@@ -372,8 +373,8 @@ llama_context::llama_context(
     if (cparams.razor_attn_enabled) {
         auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
         if (kv) {
-            kv->razor_attn_enabled = true;
-            kv->razor_attn_window  = cparams.razor_attn_window;
+            kv->set_razor_attn_enabled(true);
+            kv->set_razor_attn_window(cparams.razor_attn_window);
         }
     }
 
@@ -381,9 +382,9 @@ llama_context::llama_context(
     if (cparams.xkv_enabled) {
         auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
         if (kv) {
-            kv->xkv_enabled  = true;
-            kv->xkv_rank     = cparams.xkv_rank;
-            kv->xkv_profile_path = cparams.xkv_profile_path;
+            kv->set_xkv_enabled(true);
+            kv->set_xkv_rank(cparams.xkv_rank);
+            kv->set_xkv_profile_path(!cparams.xkv_profile_path.empty() ? cparams.xkv_profile_path.c_str() : "");
         }
     }
 
@@ -3559,9 +3560,6 @@ llama_context_params llama_context_default_params() {
         /*.xkv_enabled                 =*/ false,
         /*.xkv_rank                    =*/ 32,
         /*.xkv_profile_path            =*/ nullptr,
-        /*.n_head_kv                   =*/ 0,
-        /*.sampler                     =*/ nullptr,
-        /*.n_sampler                   =*/ 0,
         /*.ctx_other                   =*/ nullptr,
     };
 

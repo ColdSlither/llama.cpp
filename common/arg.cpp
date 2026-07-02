@@ -1501,9 +1501,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_RAZOR_ATTN").set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
-        {"--razor-attn-window"}, {"--razor-attn-window"},
+        {"--razor-attn-window"}, "N",
         "local window size in tokens for non-retrieval attention heads (default: 2048)",
-        "N",
         [](common_params & params, const std::string & value) {
             params.razor_attn_window = std::stoi(value);
         }

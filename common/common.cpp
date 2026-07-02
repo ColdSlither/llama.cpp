@@ -1607,7 +1607,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
 
     cparams.xkv_enabled       = params.xkv;
     cparams.xkv_rank          = params.xkv_rank;
-    cparams.xkv_profile_path  = params.xkv_profile_path;
+    cparams.xkv_profile_path  = params.xkv_profile_path.c_str();
 
 
     cparams.type_k = params.cache_type_k;

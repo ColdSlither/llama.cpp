@@ -12,6 +12,8 @@
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <cfloat>
+#include <numeric>
 
 static bool ggml_is_power_of_2(int n) {
     return (n & (n - 1)) == 0;
@@ -1311,15 +1313,18 @@ static int kvzip_compact(
     for (int i = 0; i < n_keep; i++) {
         int src = indices[i];
         if (src != i) {
-            cells.pos[i]   = cells.pos[src];
-            cells.ext[i]   = cells.ext[src];
-            cells.shift[i] = cells.shift[src];
-            cells.seq[i]   = cells.seq[src];
+            cells.pos_set(i, cells.pos_get(src));
         }
     }
 
     return n_keep;
 }
+
+//
+// Forward declarations for KV-cache helpers used below.
+//
+static float depthkv_compute_sensitivity(const ggml_tensor * k, const ggml_tensor * v);
+static float depthkv_sensitivity_to_keep(float sensitivity, float min_keep, float max_keep);
 
 void llama_kv_cache::kvzip_compress() {
     if (!kvzip_enabled) {
@@ -1341,7 +1346,7 @@ void llama_kv_cache::kvzip_compress() {
         const auto & cells = v_cells[0];
         int n_used = 0;
         for (size_t i = 0; i < cells.size(); i++) {
-            if (cells.pos[i] >= 0) {
+            if (cells.pos_get((uint32_t)i) >= 0) {
                 n_used++;
             }
         }
@@ -1385,7 +1390,7 @@ void llama_kv_cache::fastkv_select_prefill() {
     const auto & cells = v_cells[0];
     int n_used = 0;
     for (size_t i = 0; i < cells.size(); i++) {
-        if (cells.pos[i] >= 0) {
+        if (cells.pos_get((uint32_t)i) >= 0) {
             n_used++;
         }
     }
@@ -1409,7 +1414,7 @@ void llama_kv_cache::fastkv_compress() {
         const auto & cells = v_cells[0];
         int n_used = 0;
         for (size_t i = 0; i < cells.size(); i++) {
-            if (cells.pos[i] >= 0) {
+            if (cells.pos_get((uint32_t)i) >= 0) {
                 n_used++;
             }
         }
@@ -1513,34 +1518,31 @@ static float razor_compute_echo_score(
     return count > 0 ? total_sim / count : 0.0f;
 }
 
-static int razor_profile_heads(
-    llama_kv_cache & cache,
+void llama_kv_cache::razor_profile_heads(
     const ggml_tensor * k_first_layer)
 {
     if (!k_first_layer || k_first_layer->ne[1] < 16) {
-        return 0; // Not enough tokens to profile
+        return;
     }
 
-    const int n_embd_head = 128; // typical head dimension
+    const int n_embd_head = 128;
     const int n_kv = (int)k_first_layer->ne[1];
-    const int n_head_total = cache.razor_attn_n_head > 0 ? cache.razor_attn_n_head : 8;
+    const int n_head_total = razor_attn_n_head > 0 ? razor_attn_n_head : 8;
 
-    cache.razor_attn_profiles.clear();
-    cache.razor_attn_profiles.reserve(n_head_total);
+    razor_attn_profiles.clear();
+    razor_attn_profiles.reserve(n_head_total);
 
     for (int h = 0; h < n_head_total; h++) {
         float avg_dist = razor_compute_echo_score(
             k_first_layer, n_embd_head, n_head_total, h, n_kv);
-        bool is_retrieval = avg_dist > 0.3f; // heuristic threshold
-        cache.razor_attn_profiles.push_back({
-            /*.layer =*/ 0,
-            /*.head  =*/ (uint32_t)h,
-            /*.is_retrieval     =*/ is_retrieval,
+        bool is_retrieval = avg_dist > 0.3f;
+        razor_attn_profiles.push_back({
+            /*.layer =*/ 0, /*.head =*/ (uint32_t)h,
+            /*.is_retrieval=*/ is_retrieval,
             /*.avg_attn_distance=*/ avg_dist,
         });
     }
-    cache.razor_attn_profiled = true;
-    return n_head_total;
+    razor_attn_profiled = true;
 }
 
 // Post-process an already-built KQ mask for RazorAttention.
@@ -1570,7 +1572,7 @@ void llama_kv_cache::razor_apply_mask(ggml_tensor * kq_mask) const {
                         if (is_half) {
                             // F16: write -INF as very negative float16
                             auto * data = (ggml_fp16_t *)kq_mask->data;
-                            data[idx] = GGML_FP32_TO_FP16(-FLT_MAX / 2.0f);
+                            data[idx] = ggml_fp32_to_fp16(-FLT_MAX / 2.0f);
                         } else {
                             auto * data = (float *)kq_mask->data;
                             data[idx] = -FLT_MAX / 2.0f;
@@ -1584,7 +1586,7 @@ void llama_kv_cache::razor_apply_mask(ggml_tensor * kq_mask) const {
 
 // Compensation token computation for RazorAttention.
 // Average K/V of tokens that fall outside the local window.
-void llama_kv_cache::razor_compute_compensation(int n_kv) const {
+void llama_kv_cache::razor_compute_compensation(int _n_kv) const { (void)_n_kv;
     if (!razor_attn_enabled || !razor_attn_profiled) {
         return;
     }
@@ -2767,14 +2769,14 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
                         const uint64_t idst = off_s + h * stride_h + ii * n_kv;
                         for (int64_t jj = 0; jj < n_kv; ++jj) {
                             if (cells.is_empty(jj)) {
-                                data[idst + jj] = GGML_FP16_TO_FP32(data[idst + jj]) > -1e20f
-                                    ? GGML_FP32_TO_FP16(-INFINITY)
+                                data[idst + jj] = ggml_fp16_to_fp32(data[idst + jj]) > -1e20f
+                                    ? ggml_fp32_to_fp16(-INFINITY)
                                     : data[idst + jj];
                                 continue;
                             }
                             const int64_t p_kv = cells.pos_get(jj);
                             if (p_q - p_kv > (int64_t)razor_attn_window) {
-                                data[idst + jj] = GGML_FP32_TO_FP16(-INFINITY);
+                                data[idst + jj] = ggml_fp32_to_fp16(-INFINITY);
                             }
                         }
                     }

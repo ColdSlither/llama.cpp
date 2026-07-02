@@ -185,12 +185,28 @@ public:
 
     // KVzip compression
     void kvzip_compress();
+    // Setter methods for KVzip/DepthKV/RazorAttention/FastKV/xKV params
+    void set_kvzip_enabled(bool v)        { kvzip_enabled = v; }
+    void set_kvzip_keep_ratio(float v)    { kvzip_keep_ratio = v; }
+    void set_depthkv_enabled(bool v)      { depthkv_enabled = v; }
+    void set_depthkv_min_keep(float v)    { depthkv_min_keep = v; }
+    void set_depthkv_max_keep(float v)    { depthkv_max_keep = v; }
+    void set_fastkv_enabled(bool v)       { fastkv_enabled = v; }
+    void set_fastkv_tsp_rate(float v)     { fastkv_tsp_rate = v; }
+    void set_fastkv_tsp_layer(int v)      { fastkv_tsp_layer = v; }
+    void set_fastkv_kv_retention(float v) { fastkv_kv_retention = v; }
+    void set_xkv_enabled(bool v)          { xkv_enabled = v; }
+    void set_xkv_rank(int v)              { xkv_rank = v; }
+    void set_xkv_profile_path(const std::string & v) { xkv_profile_path = v; }
+    void set_razor_attn_enabled(bool v)   { razor_attn_enabled = v; }
+    void set_razor_attn_window(int v)     { razor_attn_window = v; }
 
     // RazorAttention — head-type specialization
     void razor_apply_mask(ggml_tensor * kq_mask) const;
-    void razor_compute_compensation(int n_kv) const;
+    void razor_compute_compensation(int _n_kv) const;
     void razor_save_profile(const char * path) const;
     bool razor_load_profile(const char * path);
+    void razor_profile_heads(const ggml_tensor * k_first_layer);
 
     // FastKV — token-selective propagation + KV retention
     void fastkv_select_prefill();

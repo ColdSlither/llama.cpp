@@ -163,6 +163,11 @@ public:
     void razor_save_profile(const char * path) const;
     bool razor_load_profile(const char * path);
 
+    // FastKV — token-selective propagation + KV retention
+    void fastkv_select_prefill();
+    void fastkv_compress();
+    const std::vector<int> & fastkv_get_selected() const { return fastkv_selected_indices; }
+
     uint32_t get_size()     const;
     uint32_t get_n_stream() const;
 
@@ -285,6 +290,14 @@ private:
     int      razor_attn_window    = 2048;
     bool     razor_attn_profiled  = false;
     int32_t  razor_attn_n_head    = 0;   // n_head_kv, set during profiling
+
+    // FastKV state
+    bool     fastkv_enabled       = false;
+    float    fastkv_tsp_rate      = 0.20f;
+    int      fastkv_tsp_layer     = -1;
+    float    fastkv_kv_retention  = 0.10f;
+    bool     fastkv_prefill_done  = false;
+    std::vector<int> fastkv_selected_indices;
 
     struct head_profile {
         uint32_t layer;

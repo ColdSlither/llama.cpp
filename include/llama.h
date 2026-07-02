@@ -391,6 +391,17 @@ extern "C" {
         bool razor_attn_enabled;
         int  razor_attn_window;
 
+        // depthkv: layer-dependent KV budgets
+        bool depthkv_enabled;
+        float depthkv_min_keep;
+        float depthkv_max_keep;
+
+        // fastkv: token-selective propagation + KV retention
+        bool  fastkv_enabled;
+        float fastkv_tsp_rate;
+        int   fastkv_tsp_layer;
+        float fastkv_kv_retention;
+
         // [EXPERIMENTAL]
         // backend sampler chain configuration (make sure the caller keeps the sampler chains alive)
         // note: the samplers must be sampler chains (i.e. use llama_sampler_chain_init)

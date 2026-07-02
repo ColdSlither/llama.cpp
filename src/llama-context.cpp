@@ -348,12 +348,17 @@ llama_context::llama_context(
         if (kv) {
             kv->kvzip_enabled    = true;
             kv->kvzip_keep_ratio = cparams.kvzip_ratio;
-        if (cparams.depthkv_enabled) {
+        }
+        if (cparams.depthkv_enabled && kv) {
             kv->depthkv_enabled  = true;
             kv->depthkv_min_keep = cparams.depthkv_min_keep;
             kv->depthkv_max_keep = cparams.depthkv_max_keep;
         }
-
+        if (cparams.fastkv_enabled && kv) {
+            kv->fastkv_enabled       = true;
+            kv->fastkv_tsp_rate      = cparams.fastkv_tsp_rate;
+            kv->fastkv_tsp_layer     = cparams.fastkv_tsp_layer;
+            kv->fastkv_kv_retention  = cparams.fastkv_kv_retention;
         }
     }
 
@@ -3528,6 +3533,13 @@ llama_context_params llama_context_default_params() {
         /*.kvzip_ratio                 =*/ 0.33f,
         /*.razor_attn_enabled          =*/ false,
         /*.razor_attn_window           =*/ 2048,
+        /*.depthkv_enabled             =*/ false,
+        /*.depthkv_min_keep            =*/ 0.20f,
+        /*.depthkv_max_keep            =*/ 0.80f,
+        /*.fastkv_enabled              =*/ false,
+        /*.fastkv_tsp_rate             =*/ 0.20f,
+        /*.fastkv_tsp_layer            =*/ -1,
+        /*.fastkv_kv_retention         =*/ 0.10f,
         /*.n_head_kv                   =*/ 0,
         /*.sampler                     =*/ nullptr,
         /*.n_sampler                   =*/ 0,

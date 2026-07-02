@@ -54,6 +54,17 @@ struct llama_cparams {
     int  razor_attn_window;
     int  n_head_kv;  // number of KV heads, set during context init for razor-attn mask sizing
 
+    // depthkv: layer-dependent compression budgets
+    bool depthkv_enabled;
+    float depthkv_min_keep;
+    float depthkv_max_keep;
+
+    // fastkv: token-selective propagation + KV retention
+    bool  fastkv_enabled;
+    float fastkv_tsp_rate;
+    int   fastkv_tsp_layer;
+    float fastkv_kv_retention;
+
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
 
     enum llama_context_type ctx_type;

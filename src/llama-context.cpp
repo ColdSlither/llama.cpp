@@ -86,6 +86,12 @@ llama_context::llama_context(
     cparams.razor_attn_window  = params.razor_attn_window;
     cparams.n_head_kv          = (int)hparams.n_head_kv(0);
 
+    cparams.xkv_enabled        = params.xkv_enabled;
+    cparams.xkv_rank           = params.xkv_rank;
+    if (params.xkv_profile_path) {
+        cparams.xkv_profile_path = params.xkv_profile_path;
+    }
+
     cparams.n_ctx            = params.n_ctx           == 0    ? hparams.n_ctx_train           : params.n_ctx;
     cparams.rope_freq_base   = params.rope_freq_base  == 0.0f ? hparams.rope_freq_base_train  : params.rope_freq_base;
     cparams.rope_freq_scale  = params.rope_freq_scale == 0.0f ? hparams.rope_freq_scale_train : params.rope_freq_scale;
@@ -368,6 +374,16 @@ llama_context::llama_context(
         if (kv) {
             kv->razor_attn_enabled = true;
             kv->razor_attn_window  = cparams.razor_attn_window;
+        }
+    }
+
+    // Wire xKV parameters into the cache.
+    if (cparams.xkv_enabled) {
+        auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
+        if (kv) {
+            kv->xkv_enabled  = true;
+            kv->xkv_rank     = cparams.xkv_rank;
+            kv->xkv_profile_path = cparams.xkv_profile_path;
         }
     }
 
@@ -3540,6 +3556,9 @@ llama_context_params llama_context_default_params() {
         /*.fastkv_tsp_rate             =*/ 0.20f,
         /*.fastkv_tsp_layer            =*/ -1,
         /*.fastkv_kv_retention         =*/ 0.10f,
+        /*.xkv_enabled                 =*/ false,
+        /*.xkv_rank                    =*/ 32,
+        /*.xkv_profile_path            =*/ nullptr,
         /*.n_head_kv                   =*/ 0,
         /*.sampler                     =*/ nullptr,
         /*.n_sampler                   =*/ 0,

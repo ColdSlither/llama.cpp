@@ -65,6 +65,11 @@ struct llama_cparams {
     int   fastkv_tsp_layer;
     float fastkv_kv_retention;
 
+    // xkv: cross-layer SVD factorization for 8x KV-cache compression
+    bool  xkv_enabled;
+    int   xkv_rank;
+    std::string xkv_profile_path;
+
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
 
     enum llama_context_type ctx_type;

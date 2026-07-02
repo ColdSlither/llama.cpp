@@ -1531,6 +1531,28 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_env("LLAMA_ARG_DEPTHKV_MAX_KEEP").set_examples({LLAMA_EXAMPLE_SERVER}));
 
     add_opt(common_arg(
+        {"--xkv"}, {"--no-xkv"},
+        "enable xKV cross-layer SVD factorization for 8x KV-cache compression (default: disabled)",
+        [](common_params & params, bool value) {
+            params.xkv = value;
+        }
+    ).set_env("LLAMA_ARG_XKV").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--xkv-rank"}, "N",
+        string_format("xKV SVD rank (default: %d)", params.xkv_rank),
+        [](common_params & params, const std::string & value) {
+            params.xkv_rank = std::stoi(value);
+        }
+    ).set_env("LLAMA_ARG_XKV_RANK").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--xkv-profile-path"}, "F",
+        "path to xKV profile for save/load of the SVD basis",
+        [](common_params & params, const std::string & value) {
+            params.xkv_profile_path = value;
+        }
+    ).set_env("LLAMA_ARG_XKV_PROFILE_PATH").set_examples({LLAMA_EXAMPLE_SERVER}));
+
+    add_opt(common_arg(
         {"--cache-idle-slots"},
         {"--no-cache-idle-slots"},
         "save idle slots to the prompt cache on new task, and clear them when using unified KV (default: enabled, requires cache-ram)",

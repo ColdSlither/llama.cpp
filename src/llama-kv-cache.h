@@ -9,6 +9,35 @@
 #include <unordered_map>
 #include <vector>
 
+//
+// xKV basis — cross-layer SVD factorization for KV-cache compression
+//
+
+struct xkv_basis {
+    int32_t n_singular = 32;   // number of singular vectors (rank)
+    int32_t n_embd_k   = 0;    // K embedding dimension
+    int32_t n_embd_v   = 0;    // V embedding dimension
+
+    // Shared basis matrices (n_singular x n_embd), row-major
+    // Each row is one singular vector
+    std::vector<float> U_k;  // [n_singular * n_embd_k]
+    std::vector<float> U_v;  // [n_singular * n_embd_v]
+
+    // Per-layer coefficients (n_layers x n_singular)
+    // coeffs_k[l][s] = projection of layer l's K onto singular vector s
+    std::vector<std::vector<float>> coeffs_k;
+    std::vector<std::vector<float>> coeffs_v;
+
+    bool is_valid() const {
+        return n_singular > 0 && n_embd_k > 0 && n_embd_v > 0
+            && !U_k.empty() && !U_v.empty()
+            && (int32_t)U_k.size() == n_singular * n_embd_k
+            && (int32_t)U_v.size() == n_singular * n_embd_v
+            && coeffs_k.size() == coeffs_v.size()
+            && !coeffs_k.empty();
+    }
+};
+
 struct llama_cparams;
 struct llama_hparams;
 struct llama_model;
@@ -168,6 +197,14 @@ public:
     void fastkv_compress();
     const std::vector<int> & fastkv_get_selected() const { return fastkv_selected_indices; }
 
+    // xKV — cross-layer SVD factorization
+    void xkv_compute_basis();
+    void xkv_project();
+    void xkv_reconstruct_k(ggml_tensor * k_out, const ggml_tensor * coeffs_in, int32_t il) const;
+    void xkv_reconstruct_v(ggml_tensor * v_out, const ggml_tensor * coeffs_in, int32_t il) const;
+    void xkv_save_profile(const char * path) const;
+    bool xkv_load_profile(const char * path);
+
     uint32_t get_size()     const;
     uint32_t get_n_stream() const;
 
@@ -298,6 +335,13 @@ private:
     float    fastkv_kv_retention  = 0.10f;
     bool     fastkv_prefill_done  = false;
     std::vector<int> fastkv_selected_indices;
+
+    // xKV state
+    bool     xkv_enabled          = false;
+    int32_t  xkv_rank             = 32;
+    bool     xkv_profiled         = false;
+    std::string xkv_profile_path;
+    xkv_basis xkv_basis_data;
 
     struct head_profile {
         uint32_t layer;

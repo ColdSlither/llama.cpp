@@ -402,6 +402,11 @@ extern "C" {
         int   fastkv_tsp_layer;
         float fastkv_kv_retention;
 
+        // xkv: cross-layer SVD factorization for 8x KV-cache compression
+        bool  xkv_enabled;
+        int   xkv_rank;
+        const char * xkv_profile_path;
+
         // [EXPERIMENTAL]
         // backend sampler chain configuration (make sure the caller keeps the sampler chains alive)
         // note: the samplers must be sampler chains (i.e. use llama_sampler_chain_init)

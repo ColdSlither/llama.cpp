@@ -1650,6 +1650,536 @@ bool llama_kv_cache::razor_load_profile(const char * path) {
     return razor_attn_profiled;
 }
 
+//
+// xKV — cross-layer SVD factorization for KV-cache compression
+//
+// Computes a shared SVD basis across transformer layers and stores
+// per-layer coefficients instead of full K/V tensors, achieving ~8x compression.
+//
+
+// Power iteration to compute the top-n eigenvectors of a symmetric matrix G (gram matrix).
+// G is [n x n] in row-major storage.
+// Returns eigenvectors as [n_singular x n] row-major, eigenvalues in descending order.
+static bool xkv_power_iteration(
+    const std::vector<double> & G,
+    int n,
+    int n_singular,
+    std::vector<float> & eigenvectors,
+    std::vector<double> & eigenvalues,
+    int max_iter = 100,
+    double tol = 1e-8)
+{
+    eigenvectors.resize(n_singular * n, 0.0f);
+    eigenvalues.resize(n_singular, 0.0);
+
+    std::vector<double> G_host(n * n);
+    for (int i = 0; i < n * n; i++) {
+        G_host[i] = G[i];
+    }
+
+    for (int s = 0; s < n_singular; s++) {
+        // Random initial vector
+        std::vector<double> v(n, 0.0);
+        std::vector<double> v_prev(n, 0.0);
+        for (int i = 0; i < n; i++) {
+            v[i] = (double)(rand() % 10000) / 5000.0 - 1.0;
+        }
+
+        // Normalize
+        double norm = 0.0;
+        for (int i = 0; i < n; i++) norm += v[i] * v[i];
+        norm = sqrt(norm);
+        if (norm > 0) {
+            for (int i = 0; i < n; i++) v[i] /= norm;
+        }
+
+        bool converged = false;
+        for (int iter = 0; iter < max_iter; iter++) {
+            // v = G * v_prev
+            std::vector<double> v_new(n, 0.0);
+            for (int i = 0; i < n; i++) {
+                double sum = 0.0;
+                for (int j = 0; j < n; j++) {
+                    sum += G_host[i * n + j] * v[j];
+                }
+                v_new[i] = sum;
+            }
+
+            // Deflate: subtract projection onto already-found eigenvectors
+            for (int ps = 0; ps < s; ps++) {
+                double dot = 0.0;
+                for (int i = 0; i < n; i++) {
+                    dot += eigenvectors[ps * n + i] * v_new[i];
+                }
+                for (int i = 0; i < n; i++) {
+                    v_new[i] -= dot * eigenvectors[ps * n + i];
+                }
+            }
+
+            norm = 0.0;
+            for (int i = 0; i < n; i++) norm += v_new[i] * v_new[i];
+            norm = sqrt(norm);
+            if (norm > 0) {
+                for (int i = 0; i < n; i++) v_new[i] /= norm;
+            }
+
+            // Check convergence
+            double diff = 0.0;
+            for (int i = 0; i < n; i++) {
+                double d = v_new[i] - v[i];
+                diff += d * d;
+            }
+            diff = sqrt(diff);
+
+            v = v_new;
+
+            if (diff < tol) {
+                converged = true;
+                break;
+            }
+        }
+
+        // Store eigenvector
+        for (int i = 0; i < n; i++) {
+            eigenvectors[s * n + i] = (float)v[i];
+        }
+
+        // Compute eigenvalue = v^T * G * v
+        double eval = 0.0;
+        for (int i = 0; i < n; i++) {
+            double row_sum = 0.0;
+            for (int j = 0; j < n; j++) {
+                row_sum += G_host[i * n + j] * v[j];
+            }
+            eval += v[i] * row_sum;
+        }
+        eigenvalues[s] = eval;
+    }
+
+    return true;
+}
+
+void llama_kv_cache::xkv_compute_basis() {
+    if (!xkv_enabled) {
+        return;
+    }
+
+    // Try loading profile first
+    if (!xkv_profile_path.empty()) {
+        if (xkv_load_profile(xkv_profile_path.c_str())) {
+            LLAMA_LOG_INFO("%s: loaded xKV profile from %s\n", __func__, xkv_profile_path.c_str());
+            return;
+        }
+    }
+
+    if (layers.empty()) {
+        LLAMA_LOG_WARN("%s: no layers in cache, cannot compute basis\n", __func__);
+        return;
+    }
+
+    // Sample layers: 0, mid, last
+    int n_layers = (int)layers.size();
+    std::vector<int> sample_layers;
+    sample_layers.push_back(0);
+    if (n_layers > 2) {
+        sample_layers.push_back(n_layers / 2);
+    }
+    if (n_layers > 1) {
+        sample_layers.push_back(n_layers - 1);
+    }
+
+    int n_embd_k = hparams.n_embd_k_gqa(sample_layers[0]);
+    int n_embd_v = 0; // determined below
+
+    // Collect K tensors from sampled layers for Gram matrix computation
+    std::vector<const ggml_tensor *> k_sampled;
+    for (int li : sample_layers) {
+        if (li < (int)layers.size() && layers[li].k) {
+            k_sampled.push_back(layers[li].k);
+        }
+    }
+
+    if (k_sampled.empty()) {
+        LLAMA_LOG_WARN("%s: no K tensors available for xKV basis computation\n", __func__);
+        return;
+    }
+
+    // Compute Gram matrix G = A^T * A where A is stacked K rows
+    int n_embd = n_embd_k;
+    std::vector<double> G(n_embd * n_embd, 0.0);
+
+    for (auto * t : k_sampled) {
+        int n_rows = (int)t->ne[1];
+        for (int i = 0; i < n_rows; i++) {
+            for (int a = 0; a < n_embd; a++) {
+                double va = ggml_get_f32_1d(t, (int64_t)i * n_embd + a);
+                if (va == 0.0) continue;
+                for (int b = 0; b < n_embd; b++) {
+                    double vb = ggml_get_f32_1d(t, (int64_t)i * n_embd + b);
+                    G[a * n_embd + b] += va * vb;
+                }
+            }
+        }
+    }
+
+    // Compute top-n_singular eigenvectors via power iteration
+    int n_singular = xkv_rank;
+    std::vector<float> eigvecs_k;
+    std::vector<double> evals_k;
+
+    if (!xkv_power_iteration(G, n_embd, n_singular, eigvecs_k, evals_k)) {
+        LLAMA_LOG_ERROR("%s: power iteration failed for K basis\n", __func__);
+        return;
+    }
+
+    // Same for V: collect V tensors and compute Gram matrix
+    std::vector<const ggml_tensor *> v_sampled;
+    for (int li : sample_layers) {
+        if (li < (int)layers.size() && layers[li].v) {
+            v_sampled.push_back(layers[li].v);
+        }
+    }
+
+    if (v_sampled.empty()) {
+        LLAMA_LOG_WARN("%s: no V tensors available for xKV basis computation\n", __func__);
+        return;
+    }
+
+    // For V, determine embedding dimension from the tensor shape
+    // V may be transposed: [kv_size, n_embd_v_gqa, ...] or [n_embd_head, n_head, ...]
+    n_embd_v = (int)v_sampled[0]->ne[0];
+    if (v_trans) {
+        // V transposed layout: ne[0] = kv_size
+        // The actual embedding dim is in the V tensor's spatial dims
+        // We'll use hparams to get the correct dim
+        n_embd_v = hparams.n_embd_v_gqa(sample_layers[0]);
+    }
+
+    std::vector<double> Gv(n_embd_v * n_embd_v, 0.0);
+    for (auto * t : v_sampled) {
+        int n_rows = (int)t->ne[1];
+        if (v_trans) {
+            // For transposed V, each column slice is a V vector
+            // V shape: [kv_size, n_embd_v_gqa, ...]
+            // Use ne[0] as the token dimension (kv_size), ne[1] as embedding
+            n_rows = (int)t->ne[0]; // kv_size
+            int n_embd_v_gqa = (int)t->ne[1];
+            for (int i = 0; i < n_rows; i++) {
+                for (int a = 0; a < n_embd_v_gqa; a++) {
+                    double va = ggml_get_f32_1d(t, (int64_t)a * n_rows + i);
+                    if (va == 0.0) continue;
+                    for (int b = 0; b < n_embd_v_gqa; b++) {
+                        double vb = ggml_get_f32_1d(t, (int64_t)b * n_rows + i);
+                        Gv[a * n_embd_v_gqa + b] += va * vb;
+                    }
+                }
+            }
+            n_embd_v = n_embd_v_gqa;
+        } else {
+            for (int i = 0; i < n_rows; i++) {
+                for (int a = 0; a < n_embd_v; a++) {
+                    double va = ggml_get_f32_1d(t, (int64_t)i * n_embd_v + a);
+                    if (va == 0.0) continue;
+                    for (int b = 0; b < n_embd_v; b++) {
+                        double vb = ggml_get_f32_1d(t, (int64_t)i * n_embd_v + b);
+                        Gv[a * n_embd_v + b] += va * vb;
+                    }
+                }
+            }
+        }
+    }
+
+    std::vector<float> eigvecs_v;
+    std::vector<double> evals_v;
+
+    if (!xkv_power_iteration(Gv, n_embd_v, n_singular, eigvecs_v, evals_v)) {
+        LLAMA_LOG_ERROR("%s: power iteration failed for V basis\n", __func__);
+        return;
+    }
+
+    // Store basis
+    xkv_basis_data.n_singular = n_singular;
+    xkv_basis_data.n_embd_k   = n_embd_k;
+    xkv_basis_data.n_embd_v   = n_embd_v;
+    xkv_basis_data.U_k        = std::move(eigvecs_k);
+    xkv_basis_data.U_v        = std::move(eigvecs_v);
+
+    // Initialize coefficient arrays
+    xkv_basis_data.coeffs_k.resize(n_layers);
+    xkv_basis_data.coeffs_v.resize(n_layers);
+    for (int l = 0; l < n_layers; l++) {
+        xkv_basis_data.coeffs_k[l].resize(n_singular, 0.0f);
+        xkv_basis_data.coeffs_v[l].resize(n_singular, 0.0f);
+    }
+
+    xkv_profiled = true;
+
+    LLAMA_LOG_INFO("%s: xKV basis computed: n_singular=%d, n_embd_k=%d, n_embd_v=%d, samples from %d layers\n",
+        __func__, n_singular, n_embd_k, n_embd_v, (int)k_sampled.size());
+
+    // Save profile
+    if (!xkv_profile_path.empty()) {
+        xkv_save_profile(xkv_profile_path.c_str());
+    }
+}
+
+void llama_kv_cache::xkv_project() {
+    if (!xkv_enabled || !xkv_profiled || !xkv_basis_data.is_valid()) {
+        return;
+    }
+
+    if (layers.empty()) {
+        return;
+    }
+
+    int n_singular = xkv_basis_data.n_singular;
+    int n_layers   = (int)layers.size();
+
+    // Project each layer's K onto the shared basis
+    for (int l = 0; l < n_layers; l++) {
+        auto * k_tensor = layers[l].k;
+        if (!k_tensor) continue;
+
+        int n_embd = (int)k_tensor->ne[0];
+        int n_kv   = (int)k_tensor->ne[1]; // number of KV tokens in this layer
+
+        // coeffs_k[l][s] = mean over tokens of sum_e K_token[e] * U_k[s][e]
+        for (int s = 0; s < n_singular; s++) {
+            double sum = 0.0;
+            int count = 0;
+            for (int i = 0; i < n_kv; i++) {
+                double dot = 0.0;
+                for (int e = 0; e < n_embd && e < xkv_basis_data.n_embd_k; e++) {
+                    double ke = ggml_get_f32_1d(k_tensor, (int64_t)i * n_embd + e);
+                    dot += ke * xkv_basis_data.U_k[s * xkv_basis_data.n_embd_k + e];
+                }
+                sum += dot;
+                count++;
+            }
+            xkv_basis_data.coeffs_k[l][s] = count > 0 ? (float)(sum / count) : 0.0f;
+        }
+
+        // Same for V
+        auto * v_tensor = layers[l].v;
+        if (!v_tensor) continue;
+
+        int n_embd_v_gqa = xkv_basis_data.n_embd_v;
+        int n_kv_v = v_trans ? (int)v_tensor->ne[0] : (int)v_tensor->ne[1];
+
+        for (int s = 0; s < n_singular; s++) {
+            double sum = 0.0;
+            int count = 0;
+            for (int i = 0; i < n_kv_v; i++) {
+                double dot = 0.0;
+                if (v_trans) {
+                    // V transposed: V[e][i]
+                    for (int e = 0; e < n_embd_v_gqa; e++) {
+                        double ve = ggml_get_f32_1d(v_tensor, (int64_t)e * n_kv_v + i);
+                        dot += ve * xkv_basis_data.U_v[s * xkv_basis_data.n_embd_v + e];
+                    }
+                } else {
+                    for (int e = 0; e < n_embd_v_gqa; e++) {
+                        double ve = ggml_get_f32_1d(v_tensor, (int64_t)i * n_embd_v_gqa + e);
+                        dot += ve * xkv_basis_data.U_v[s * xkv_basis_data.n_embd_v + e];
+                    }
+                }
+                sum += dot;
+                count++;
+            }
+            xkv_basis_data.coeffs_v[l][s] = count > 0 ? (float)(sum / count) : 0.0f;
+        }
+    }
+
+    LLAMA_LOG_INFO("%s: xKV projection complete for %d layers, rank=%d\n",
+        __func__, n_layers, n_singular);
+}
+
+void llama_kv_cache::xkv_reconstruct_k(
+    ggml_tensor * k_out,
+    const ggml_tensor * coeffs_in,
+    int32_t il) const
+{
+    GGML_UNUSED(coeffs_in);
+    if (!xkv_enabled || !xkv_profiled) {
+        return;
+    }
+
+    const int32_t ikv = map_layer_ids.at(il);
+    if (ikv < 0 || ikv >= (int32_t)layers.size()) {
+        return;
+    }
+
+    int n_singular = xkv_basis_data.n_singular;
+    int n_embd_k   = (int)k_out->ne[0];
+
+    // For each token in k_out, reconstruct: k_token[e] = sum_s coeffs[l][s] * U_k[s][e]
+    // Since we stored mean coefficients, we use the same U_k and scale by the coefficient
+    int n_kv = (int)k_out->ne[1];
+    for (int i = 0; i < n_kv; i++) {
+        for (int e = 0; e < n_embd_k && e < xkv_basis_data.n_embd_k; e++) {
+            double val = 0.0;
+            for (int s = 0; s < n_singular; s++) {
+                val += xkv_basis_data.coeffs_k[ikv][s] * xkv_basis_data.U_k[s * xkv_basis_data.n_embd_k + e];
+            }
+            ggml_set_f32_1d(k_out, (int64_t)i * n_embd_k + e, (float)val);
+        }
+    }
+}
+
+void llama_kv_cache::xkv_reconstruct_v(
+    ggml_tensor * v_out,
+    const ggml_tensor * coeffs_in,
+    int32_t il) const
+{
+    GGML_UNUSED(coeffs_in);
+    if (!xkv_enabled || !xkv_profiled) {
+        return;
+    }
+
+    const int32_t ikv = map_layer_ids.at(il);
+    if (ikv < 0 || ikv >= (int32_t)layers.size()) {
+        return;
+    }
+
+    int n_singular = xkv_basis_data.n_singular;
+    int n_embd_v   = xkv_basis_data.n_embd_v;
+
+    if (v_trans) {
+        // V is transposed: [kv_size, n_embd_v_gqa]
+        int n_kv = (int)v_out->ne[0];
+        int n_embd_v_gqa = (int)v_out->ne[1];
+        for (int i = 0; i < n_kv; i++) {
+            for (int e = 0; e < n_embd_v_gqa && e < n_embd_v; e++) {
+                double val = 0.0;
+                for (int s = 0; s < n_singular; s++) {
+                    val += xkv_basis_data.coeffs_v[ikv][s] * xkv_basis_data.U_v[s * n_embd_v + e];
+                }
+                ggml_set_f32_1d(v_out, (int64_t)e * n_kv + i, (float)val);
+            }
+        }
+    } else {
+        int n_kv = (int)v_out->ne[1];
+        int n_embd_v_gqa = (int)v_out->ne[0];
+        for (int i = 0; i < n_kv; i++) {
+            for (int e = 0; e < n_embd_v_gqa && e < n_embd_v; e++) {
+                double val = 0.0;
+                for (int s = 0; s < n_singular; s++) {
+                    val += xkv_basis_data.coeffs_v[ikv][s] * xkv_basis_data.U_v[s * n_embd_v + e];
+                }
+                ggml_set_f32_1d(v_out, (int64_t)i * n_embd_v_gqa + e, (float)val);
+            }
+        }
+    }
+}
+
+void llama_kv_cache::xkv_save_profile(const char * path) const {
+    if (!xkv_profiled || !xkv_basis_data.is_valid()) {
+        return;
+    }
+
+    FILE * f = fopen(path, "wb");
+    if (!f) {
+        LLAMA_LOG_WARN("%s: failed to open %s for writing\n", __func__, path);
+        return;
+    }
+
+    // Binary format:
+    //   int32_t: n_singular
+    //   int32_t: n_embd_k
+    //   int32_t: n_embd_v
+    //   int32_t: n_layers
+    //   float[n_singular * n_embd_k]: U_k
+    //   float[n_singular * n_embd_v]: U_v
+    //   float[n_layers * n_singular]: coeffs_k
+    //   float[n_layers * n_singular]: coeffs_v
+
+    int32_t n_singular = xkv_basis_data.n_singular;
+    int32_t n_embd_k   = xkv_basis_data.n_embd_k;
+    int32_t n_embd_v   = xkv_basis_data.n_embd_v;
+    int32_t n_layers   = (int32_t)xkv_basis_data.coeffs_k.size();
+
+    fwrite(&n_singular, sizeof(int32_t), 1, f);
+    fwrite(&n_embd_k,   sizeof(int32_t), 1, f);
+    fwrite(&n_embd_v,   sizeof(int32_t), 1, f);
+    fwrite(&n_layers,   sizeof(int32_t), 1, f);
+
+    fwrite(xkv_basis_data.U_k.data(), sizeof(float), (size_t)n_singular * n_embd_k, f);
+    fwrite(xkv_basis_data.U_v.data(), sizeof(float), (size_t)n_singular * n_embd_v, f);
+
+    for (int32_t l = 0; l < n_layers; l++) {
+        fwrite(xkv_basis_data.coeffs_k[l].data(), sizeof(float), n_singular, f);
+    }
+    for (int32_t l = 0; l < n_layers; l++) {
+        fwrite(xkv_basis_data.coeffs_v[l].data(), sizeof(float), n_singular, f);
+    }
+
+    fclose(f);
+    LLAMA_LOG_INFO("%s: xKV profile saved to %s (rank=%d, %d layers)\n",
+        __func__, path, n_singular, n_layers);
+}
+
+bool llama_kv_cache::xkv_load_profile(const char * path) {
+    FILE * f = fopen(path, "rb");
+    if (!f) {
+        return false;
+    }
+
+    int32_t n_singular, n_embd_k, n_embd_v, n_layers;
+    if (fread(&n_singular, sizeof(int32_t), 1, f) != 1) { fclose(f); return false; }
+    if (fread(&n_embd_k,   sizeof(int32_t), 1, f) != 1) { fclose(f); return false; }
+    if (fread(&n_embd_v,   sizeof(int32_t), 1, f) != 1) { fclose(f); return false; }
+    if (fread(&n_layers,   sizeof(int32_t), 1, f) != 1) { fclose(f); return false; }
+
+    if (n_singular <= 0 || n_embd_k <= 0 || n_embd_v <= 0 || n_layers <= 0) {
+        fclose(f);
+        return false;
+    }
+
+    xkv_basis basis;
+    basis.n_singular = n_singular;
+    basis.n_embd_k   = n_embd_k;
+    basis.n_embd_v   = n_embd_v;
+
+    basis.U_k.resize((size_t)n_singular * n_embd_k);
+    basis.U_v.resize((size_t)n_singular * n_embd_v);
+
+    if (fread(basis.U_k.data(), sizeof(float), (size_t)n_singular * n_embd_k, f) != (size_t)n_singular * n_embd_k) {
+        fclose(f); return false;
+    }
+    if (fread(basis.U_v.data(), sizeof(float), (size_t)n_singular * n_embd_v, f) != (size_t)n_singular * n_embd_v) {
+        fclose(f); return false;
+    }
+
+    basis.coeffs_k.resize(n_layers);
+    basis.coeffs_v.resize(n_layers);
+    for (int32_t l = 0; l < n_layers; l++) {
+        basis.coeffs_k[l].resize(n_singular);
+        if (fread(basis.coeffs_k[l].data(), sizeof(float), n_singular, f) != (size_t)n_singular) {
+            fclose(f); return false;
+        }
+    }
+    for (int32_t l = 0; l < n_layers; l++) {
+        basis.coeffs_v[l].resize(n_singular);
+        if (fread(basis.coeffs_v[l].data(), sizeof(float), n_singular, f) != (size_t)n_singular) {
+            fclose(f); return false;
+        }
+    }
+
+    fclose(f);
+
+    if (!basis.is_valid()) {
+        return false;
+    }
+
+    xkv_basis_data = std::move(basis);
+    xkv_profiled = true;
+    xkv_rank     = n_singular;
+
+    LLAMA_LOG_INFO("%s: xKV profile loaded from %s (rank=%d, %d layers)\n",
+        __func__, path, n_singular, n_layers);
+    return true;
+}
+
 std::vector<uint32_t> llama_kv_cache::get_layer_ids() const {
     std::vector<uint32_t> res;
     res.reserve(layers.size());

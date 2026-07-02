@@ -578,6 +578,10 @@ struct common_params {
     float depthkv_max_keep = 0.80f;  // maximum keep ratio (sensitive layers)
   // local window for non-retrieval heads
 
+    bool   xkv           = false;    // enable xKV cross-layer SVD compression
+    int    xkv_rank      = 32;       // SVD rank for xKV (default: 32)
+    std::string xkv_profile_path = ""; // path to xKV profile
+
     bool input_prefix_bos  = false; // prefix BOS to user inputs, preceding input_prefix
     bool use_mmap          = true;  // enable mmap to use filesystem cache
     bool use_direct_io     = false; // read from disk without buffering

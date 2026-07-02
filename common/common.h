@@ -576,7 +576,11 @@ struct common_params {
     bool depthkv           = false;  // enable DepthKV layer budgets
     float depthkv_min_keep = 0.20f;  // minimum keep ratio (resistant layers)
     float depthkv_max_keep = 0.80f;  // maximum keep ratio (sensitive layers)
-  // local window for non-retrieval heads
+
+    bool   fastkv            = false;  // enable FastKV prefill/decode decoupling
+    float  fastkv_tsp_rate   = 0.20f;  // fraction of tokens propagated past TSP layer
+    int    fastkv_tsp_layer  = -1;     // TSP filter layer (-1 = auto: floor(n_layers/3))
+    float  fastkv_kv_retention = 0.10f; // post-prefill KV retention ratio
 
     bool   xkv           = false;    // enable xKV cross-layer SVD compression
     int    xkv_rank      = 32;       // SVD rank for xKV (default: 32)

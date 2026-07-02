@@ -1462,7 +1462,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             }
             params.checkpoint_min_step = value;
         }
-    ).set_env("LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT").set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_env("LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"-cram", "--cache-ram"}, "N",
         string_format("set the maximum cache size in MiB (default: %d, -1 - no limit, 0 - disable)"
@@ -1485,49 +1485,78 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, bool value) {
             params.kvzip = value;
         }
-    ).set_env("LLAMA_ARG_KVZIP").set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_env("LLAMA_ARG_KVZIP").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--kvzip-ratio"}, "N",
         string_format("KVzip cache compression ratio (default: %.2f)", params.kvzip_ratio),
         [](common_params & params, const std::string & value) {
             params.kvzip_ratio = std::stof(value);
         }
-    ).set_env("LLAMA_ARG_KVZIP_RATIO").set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_env("LLAMA_ARG_KVZIP_RATIO").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--razor-attn"}, {"--no-razor-attn"},
         "enable RazorAttention head-type specialization for KV-cache (default: disabled)",
         [](common_params & params, bool value) {
             params.razor_attn = value;
         }
-    ).set_env("LLAMA_ARG_RAZOR_ATTN").set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_env("LLAMA_ARG_RAZOR_ATTN").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--razor-attn-window"}, "N",
         "local window size in tokens for non-retrieval attention heads (default: 2048)",
         [](common_params & params, const std::string & value) {
             params.razor_attn_window = std::stoi(value);
         }
-    ).set_env("LLAMA_ARG_RAZOR_ATTN_WINDOW").set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_env("LLAMA_ARG_RAZOR_ATTN_WINDOW").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--depthkv"}, {"--no-depthkv"},
         "enable DepthKV layer-dependent KV budget allocation (default: disabled)",
         [](common_params & params, bool value) {
             params.depthkv = value;
         }
-    ).set_env("LLAMA_ARG_DEPTHKV").set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_env("LLAMA_ARG_DEPTHKV").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--depthkv-min-keep"}, "F",
         string_format("DepthKV min keep ratio for resistant layers (default: %.2f)", params.depthkv_min_keep),
         [](common_params & params, const std::string & value) {
             params.depthkv_min_keep = std::stof(value);
         }
-    ).set_env("LLAMA_ARG_DEPTHKV_MIN_KEEP").set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_env("LLAMA_ARG_DEPTHKV_MIN_KEEP").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--depthkv-max-keep"}, "F",
         string_format("DepthKV max keep ratio for sensitive layers (default: %.2f)", params.depthkv_max_keep),
         [](common_params & params, const std::string & value) {
             params.depthkv_max_keep = std::stof(value);
         }
-    ).set_env("LLAMA_ARG_DEPTHKV_MAX_KEEP").set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_env("LLAMA_ARG_DEPTHKV_MAX_KEEP").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
+
+    add_opt(common_arg(
+        {"--fastkv"}, {"--no-fastkv"},
+        "enable FastKV prefill/decode decoupling with token-selective propagation (default: disabled)",
+        [](common_params & params, bool value) {
+            params.fastkv = value;
+        }
+    ).set_env("LLAMA_ARG_FASTKV").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
+    add_opt(common_arg(
+        {"--fastkv-tsp-rate"}, "F",
+        string_format("FastKV fraction of tokens propagated past the TSP layer (default: %.2f)", params.fastkv_tsp_rate),
+        [](common_params & params, const std::string & value) {
+            params.fastkv_tsp_rate = std::stof(value);
+        }
+    ).set_env("LLAMA_ARG_FASTKV_TSP_RATE").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
+    add_opt(common_arg(
+        {"--fastkv-tsp-layer"}, "N",
+        "FastKV TSP filter layer index (-1 = auto: floor(n_layers/3))",
+        [](common_params & params, const std::string & value) {
+            params.fastkv_tsp_layer = std::stoi(value);
+        }
+    ).set_env("LLAMA_ARG_FASTKV_TSP_LAYER").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
+    add_opt(common_arg(
+        {"--fastkv-kv-retention"}, "F",
+        string_format("FastKV post-prefill KV retention ratio (default: %.2f)", params.fastkv_kv_retention),
+        [](common_params & params, const std::string & value) {
+            params.fastkv_kv_retention = std::stof(value);
+        }
+    ).set_env("LLAMA_ARG_FASTKV_KV_RETENTION").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
 
     add_opt(common_arg(
         {"--xkv"}, {"--no-xkv"},
@@ -1535,21 +1564,21 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, bool value) {
             params.xkv = value;
         }
-    ).set_env("LLAMA_ARG_XKV").set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_env("LLAMA_ARG_XKV").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--xkv-rank"}, "N",
         string_format("xKV SVD rank (default: %d)", params.xkv_rank),
         [](common_params & params, const std::string & value) {
             params.xkv_rank = std::stoi(value);
         }
-    ).set_env("LLAMA_ARG_XKV_RANK").set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_env("LLAMA_ARG_XKV_RANK").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--xkv-profile-path"}, "F",
         "path to xKV profile for save/load of the SVD basis",
         [](common_params & params, const std::string & value) {
             params.xkv_profile_path = value;
         }
-    ).set_env("LLAMA_ARG_XKV_PROFILE_PATH").set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_env("LLAMA_ARG_XKV_PROFILE_PATH").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
 
     add_opt(common_arg(
         {"--cache-idle-slots"},
@@ -1558,7 +1587,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, bool value) {
             params.cache_idle_slots = value;
         }
-    ).set_env("LLAMA_ARG_CACHE_IDLE_SLOTS").set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_env("LLAMA_ARG_CACHE_IDLE_SLOTS").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--context-shift"},
         {"--no-context-shift"},
@@ -1803,7 +1832,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params) {
             params.spm_infill = true;
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--samplers"}, "SAMPLERS",
         string_format("samplers that will be used for generation in the order, separated by \';\'\n(default: %s)", sampler_type_names.c_str()),
@@ -2358,7 +2387,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 }
                 params.n_parallel = value;
             }
-        ).set_env("LLAMA_ARG_N_PARALLEL").set_examples({LLAMA_EXAMPLE_SERVER}));
+        ).set_env("LLAMA_ARG_N_PARALLEL").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     } else {
         add_opt(common_arg(
             {"-np", "--parallel"}, "N",
@@ -3274,7 +3303,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 params.slot_save_path += DIRECTORY_SEPARATOR;
             }
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--media-path"}, "PATH",
         "directory for loading local media files; files can be accessed via file:// URLs using relative paths (default: disabled)",
@@ -3288,7 +3317,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 params.media_path += DIRECTORY_SEPARATOR;
             }
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--models-dir"}, "PATH",
         "directory containing models for the router server (default: disabled)",
@@ -3436,14 +3465,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, const std::string & value) {
             params.slot_prompt_similarity = std::stof(value);
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--lora-init-without-apply"},
         string_format("load LoRA adapters without applying them (apply later via POST /lora-adapters) (default: %s)", params.lora_init_without_apply ? "enabled" : "disabled"),
         [](common_params & params) {
             params.lora_init_without_apply = true;
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--sleep-idle-seconds"}, "SECONDS",
         string_format("number of seconds of idleness after which the server will sleep (default: %d; -1 = disabled)", params.sleep_idle_seconds),
@@ -3453,7 +3482,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             }
             params.sleep_idle_seconds = value;
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--simple-io"},
         "use basic IO for better compatibility in subprocesses and limited consoles",
@@ -3997,21 +4026,21 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & /*params*/, int /*value*/) {
             arg_removed("use the respective --spec-ngram-*-size-n");
         }
-    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--spec-ngram-size-m"}, "N",
         "the argument has been removed. use the respective --spec-ngram-*-size-m",
         [](common_params & /*params*/, int /*value*/) {
             arg_removed("use the respective --spec-ngram-*-size-m");
         }
-    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
         {"--spec-ngram-min-hits"}, "N",
         "the argument has been removed. use the respective --spec-ngram-*-min-hits",
         [](common_params & /*params*/, int /*value*/) {
             arg_removed("use the respective --spec-ngram-*-min-hits");
         }
-    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
 
     //
     // TTS params
@@ -4194,7 +4223,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.n_ctx = 0;
             params.n_cache_reuse = 256;
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
 
     add_opt(common_arg(
         {"--fim-qwen-3b-default"},
@@ -4208,7 +4237,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.n_ctx = 0;
             params.n_cache_reuse = 256;
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
 
     add_opt(common_arg(
         {"--fim-qwen-7b-default"},
@@ -4222,7 +4251,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.n_ctx = 0;
             params.n_cache_reuse = 256;
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
 
     add_opt(common_arg(
         {"--fim-qwen-7b-spec"},
@@ -4238,7 +4267,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.n_ctx = 0;
             params.n_cache_reuse = 256;
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
 
     add_opt(common_arg(
         {"--fim-qwen-14b-spec"},
@@ -4254,7 +4283,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.n_ctx = 0;
             params.n_cache_reuse = 256;
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
 
     add_opt(common_arg(
         {"--fim-qwen-30b-default"},
@@ -4268,7 +4297,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.n_ctx = 0;
             params.n_cache_reuse = 256;
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
 
     add_opt(common_arg(
         {"--gpt-oss-20b-default"},

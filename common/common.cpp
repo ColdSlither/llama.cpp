@@ -1605,6 +1605,11 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.depthkv_min_keep  = params.depthkv_min_keep;
     cparams.depthkv_max_keep  = params.depthkv_max_keep;
 
+    cparams.fastkv_enabled      = params.fastkv;
+    cparams.fastkv_tsp_rate     = params.fastkv_tsp_rate;
+    cparams.fastkv_tsp_layer    = params.fastkv_tsp_layer;
+    cparams.fastkv_kv_retention = params.fastkv_kv_retention;
+
     cparams.xkv_enabled       = params.xkv;
     cparams.xkv_rank          = params.xkv_rank;
     cparams.xkv_profile_path  = params.xkv_profile_path.c_str();

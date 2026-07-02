@@ -1238,17 +1238,75 @@ static void kvzip_score_tokens(
     const int n_embd_k = k->ne[0];
     const int n_embd_v = v->ne[0];
 
+    // Staging buffers for reading rows and converting to f32
+    // This handles quantized types correctly
+    std::vector<uint8_t> row_k_bytes(n_embd_k * ggml_type_size(k->type));
+    std::vector<uint8_t> row_v_bytes(n_embd_v * ggml_type_size(v->type));
+    std::vector<float> row_k(n_embd_k);
+    std::vector<float> row_v(n_embd_v);
+
     for (int i = 0; i < n_kv; i++) {
         float sum_k = 0.0f;
         float sum_v = 0.0f;
+
+        // Read K row i using proper offset and size
+        // K tensor layout: [n_embd_k, kv_size, n_stream]
+        // Row i is at offset i * nb[1]
+        size_t k_row_bytes = ggml_row_size(k->type, n_embd_k);
+        ggml_backend_tensor_get(k, row_k_bytes.data(), i * k->nb[1], k_row_bytes);
+
+        // Convert to f32
+        switch (k->type) {
+            case GGML_TYPE_F32:
+                {
+                    float * fp = (float *)row_k_bytes.data();
+                    for (int e = 0; e < n_embd_k; e++) {
+                        row_k[e] = fp[e];
+                    }
+                } break;
+            case GGML_TYPE_F16:
+                ggml_cpu_fp16_to_fp32((ggml_fp16_t *)row_k_bytes.data(), row_k.data(), n_embd_k);
+                break;
+            case GGML_TYPE_BF16:
+                ggml_cpu_bf16_to_fp32((ggml_bf16_t *)row_k_bytes.data(), row_k.data(), n_embd_k);
+                break;
+            default:
+                // For quantized types, use the generic path
+                ggml_backend_tensor_get(k, row_k.data(), i * k->nb[1], k_row_bytes);
+                break;
+        }
+
         for (int e = 0; e < n_embd_k; e++) {
-            float val = ggml_get_f32_1d(k, i * n_embd_k + e);
-            sum_k += val * val;
+            sum_k += row_k[e] * row_k[e];
         }
+
+        // Read V row i similarly
+        size_t v_row_bytes = ggml_row_size(v->type, n_embd_v);
+        ggml_backend_tensor_get(v, row_v_bytes.data(), i * v->nb[1], v_row_bytes);
+
+        switch (v->type) {
+            case GGML_TYPE_F32:
+                {
+                    float * fp = (float *)row_v_bytes.data();
+                    for (int e = 0; e < n_embd_v; e++) {
+                        row_v[e] = fp[e];
+                    }
+                } break;
+            case GGML_TYPE_F16:
+                ggml_cpu_fp16_to_fp32((ggml_fp16_t *)row_v_bytes.data(), row_v.data(), n_embd_v);
+                break;
+            case GGML_TYPE_BF16:
+                ggml_cpu_bf16_to_fp32((ggml_bf16_t *)row_v_bytes.data(), row_v.data(), n_embd_v);
+                break;
+            default:
+                ggml_backend_tensor_get(v, row_v.data(), i * v->nb[1], v_row_bytes);
+                break;
+        }
+
         for (int e = 0; e < n_embd_v; e++) {
-            float val = ggml_get_f32_1d(v, i * n_embd_v + e);
-            sum_v += val * val;
+            sum_v += row_v[e] * row_v[e];
         }
+
         scores[i] = sqrtf(sum_k) + sqrtf(sum_v);
     }
 }
@@ -1282,10 +1340,12 @@ static int kvzip_compact(
         [&](int a, int b) { return scores[a] > scores[b]; });
 
     // --- Rearrange K/V by moving top-scored rows to front ---
-    const size_t k_row_size = (size_t)k->ne[0] * ggml_type_size(k->type);
-    const size_t v_row_size = (size_t)v->ne[0] * ggml_type_size(v->type);
-    const size_t k_total = (size_t)k->ne[0] * k->ne[1] * k->ne[2] * ggml_type_size(k->type);
-    const size_t v_total = (size_t)v->ne[0] * v->ne[1] * v->ne[2] * ggml_type_size(v->type);
+    // Use ggml_nbytes for correct total size (handles padding/quantization)
+    // Use nb[1] for row stride (correct stride for the tensor layout)
+    const size_t k_total = ggml_nbytes(k);
+    const size_t v_total = ggml_nbytes(v);
+    const size_t k_row_stride = k->nb[1];  // stride in bytes for one row
+    const size_t v_row_stride = v->nb[1];  // stride in bytes for one row
 
     std::vector<uint8_t> k_buf(k_total);
     std::vector<uint8_t> v_buf(v_total);
@@ -1302,8 +1362,8 @@ static int kvzip_compact(
 
     for (int i = 0; i < n_keep; i++) {
         int src = indices[i];
-        memcpy(&k_new[i * k_row_size], &k_buf[src * k_row_size], k_row_size);
-        memcpy(&v_new[i * v_row_size], &v_buf[src * v_row_size], v_row_size);
+        memcpy(&k_new[i * k_row_stride], &k_buf[src * k_row_stride], k_row_stride);
+        memcpy(&v_new[i * v_row_stride], &v_buf[src * v_row_stride], v_row_stride);
     }
 
     ggml_backend_tensor_set(k, k_new.data(), 0, k_new.size());
@@ -1449,16 +1509,74 @@ static float depthkv_compute_sensitivity(
     const int n_kv = (int)std::min(k->ne[1], (int64_t)512);
     if (n_kv < 4) return 0.5f; // default
 
+    const int n_embd_k = (int)k->ne[0];
+    const int n_embd_v = (int)v->ne[0];
+
+    // Staging buffers for reading rows and converting to f32
+    // This handles quantized types correctly
+    std::vector<uint8_t> row_k_bytes(n_embd_k * ggml_type_size(k->type));
+    std::vector<uint8_t> row_v_bytes(n_embd_v * ggml_type_size(v->type));
+    std::vector<float> row_k(n_embd_k);
+    std::vector<float> row_v(n_embd_v);
+
     float mean_k = 0.0f, mean_v = 0.0f;
     for (int i = 0; i < n_kv; i++) {
         float nk = 0.0f, nv = 0.0f;
-        for (int e = 0; e < k->ne[0]; e++) {
-            float val = ggml_get_f32_1d(k, e + i * k->ne[0]);
-            nk += val * val;
+
+        // Read K row i using proper offset (nb[1] = stride for one row)
+        size_t k_row_bytes = ggml_row_size(k->type, n_embd_k);
+        ggml_backend_tensor_get(k, row_k_bytes.data(), i * k->nb[1], k_row_bytes);
+
+        // Convert to f32
+        switch (k->type) {
+            case GGML_TYPE_F32:
+                {
+                    float * fp = (float *)row_k_bytes.data();
+                    for (int e = 0; e < n_embd_k; e++) {
+                        row_k[e] = fp[e];
+                    }
+                } break;
+            case GGML_TYPE_F16:
+                ggml_cpu_fp16_to_fp32((ggml_fp16_t *)row_k_bytes.data(), row_k.data(), n_embd_k);
+                break;
+            case GGML_TYPE_BF16:
+                ggml_cpu_bf16_to_fp32((ggml_bf16_t *)row_k_bytes.data(), row_k.data(), n_embd_k);
+                break;
+            default:
+                // For quantized types, use the generic path
+                ggml_backend_tensor_get(k, row_k.data(), i * k->nb[1], k_row_bytes);
+                break;
         }
-        for (int e = 0; e < v->ne[0]; e++) {
-            float val = ggml_get_f32_1d(v, e + i * v->ne[0]);
-            nv += val * val;
+
+        for (int e = 0; e < n_embd_k; e++) {
+            nk += row_k[e] * row_k[e];
+        }
+
+        // Read V row i similarly
+        size_t v_row_bytes = ggml_row_size(v->type, n_embd_v);
+        ggml_backend_tensor_get(v, row_v_bytes.data(), i * v->nb[1], v_row_bytes);
+
+        switch (v->type) {
+            case GGML_TYPE_F32:
+                {
+                    float * fp = (float *)row_v_bytes.data();
+                    for (int e = 0; e < n_embd_v; e++) {
+                        row_v[e] = fp[e];
+                    }
+                } break;
+            case GGML_TYPE_F16:
+                ggml_cpu_fp16_to_fp32((ggml_fp16_t *)row_v_bytes.data(), row_v.data(), n_embd_v);
+                break;
+            case GGML_TYPE_BF16:
+                ggml_cpu_bf16_to_fp32((ggml_bf16_t *)row_v_bytes.data(), row_v.data(), n_embd_v);
+                break;
+            default:
+                ggml_backend_tensor_get(v, row_v.data(), i * v->nb[1], v_row_bytes);
+                break;
+        }
+
+        for (int e = 0; e < n_embd_v; e++) {
+            nv += row_v[e] * row_v[e];
         }
         mean_k += nk;
         mean_v += nv;
@@ -1469,13 +1587,59 @@ static float depthkv_compute_sensitivity(
     float var_k = 0.0f, var_v = 0.0f;
     for (int i = 0; i < n_kv; i++) {
         float nk = 0.0f, nv = 0.0f;
-        for (int e = 0; e < k->ne[0]; e++) {
-            float val = ggml_get_f32_1d(k, e + i * k->ne[0]);
-            nk += val * val;
+
+        // Re-read rows for variance calculation
+        size_t k_row_bytes = ggml_row_size(k->type, n_embd_k);
+        ggml_backend_tensor_get(k, row_k_bytes.data(), i * k->nb[1], k_row_bytes);
+
+        switch (k->type) {
+            case GGML_TYPE_F32:
+                {
+                    float * fp = (float *)row_k_bytes.data();
+                    for (int e = 0; e < n_embd_k; e++) {
+                        row_k[e] = fp[e];
+                    }
+                } break;
+            case GGML_TYPE_F16:
+                ggml_cpu_fp16_to_fp32((ggml_fp16_t *)row_k_bytes.data(), row_k.data(), n_embd_k);
+                break;
+            case GGML_TYPE_BF16:
+                ggml_cpu_bf16_to_fp32((ggml_bf16_t *)row_k_bytes.data(), row_k.data(), n_embd_k);
+                break;
+            default:
+                ggml_backend_tensor_get(k, row_k.data(), i * k->nb[1], k_row_bytes);
+                break;
         }
-        for (int e = 0; e < v->ne[0]; e++) {
-            float val = ggml_get_f32_1d(v, e + i * v->ne[0]);
-            nv += val * val;
+
+        for (int e = 0; e < n_embd_k; e++) {
+            nk += row_k[e] * row_k[e];
+        }
+
+        // Read V row
+        size_t v_row_bytes = ggml_row_size(v->type, n_embd_v);
+        ggml_backend_tensor_get(v, row_v_bytes.data(), i * v->nb[1], v_row_bytes);
+
+        switch (v->type) {
+            case GGML_TYPE_F32:
+                {
+                    float * fp = (float *)row_v_bytes.data();
+                    for (int e = 0; e < n_embd_v; e++) {
+                        row_v[e] = fp[e];
+                    }
+                } break;
+            case GGML_TYPE_F16:
+                ggml_cpu_fp16_to_fp32((ggml_fp16_t *)row_v_bytes.data(), row_v.data(), n_embd_v);
+                break;
+            case GGML_TYPE_BF16:
+                ggml_cpu_bf16_to_fp32((ggml_bf16_t *)row_v_bytes.data(), row_v.data(), n_embd_v);
+                break;
+            default:
+                ggml_backend_tensor_get(v, row_v.data(), i * v->nb[1], v_row_bytes);
+                break;
+        }
+
+        for (int e = 0; e < n_embd_v; e++) {
+            nv += row_v[e] * row_v[e];
         }
         var_k += (nk - mean_k) * (nk - mean_k);
         var_v += (nv - mean_v) * (nv - mean_v);
@@ -1507,16 +1671,91 @@ static float razor_compute_echo_score(
     // Echo score: measure how much a head attends to tokens that repeat.
     // Compute dot product similarity between the first token's K and each
     // subsequent token's K for this head. Higher similarity at distance = more retrieval.
+    // Uses per-row access to handle quantized tensor types correctly.
+
+    // K tensor layout: [n_embd, n_kv, n_head]
+    // head_idx offset within a row: head_idx * n_embd_head
+    // Row i offset: i * k->nb[1] (stride for one row)
+    const size_t row_bytes = ggml_row_size(k->type, k->ne[0]);
+    const size_t head_offset_bytes = head_idx * n_embd_head * ggml_type_size(k->type);
+    const float inv_embd = 1.0f / (float)n_embd_head;
+
+    std::vector<uint8_t> row_bytes_buf(row_bytes);
+    std::vector<float> row_f32(k->ne[0]);
+
     float total_sim = 0.0f;
     int count = 0;
+
+    // First, read the first token's K values for this head (v0)
+    std::vector<float> v0_head(n_embd_head);
+    ggml_backend_tensor_get(k, row_bytes_buf.data(), 0 * k->nb[1], row_bytes);
+    // Convert row to f32
+    switch (k->type) {
+        case GGML_TYPE_F32:
+            {
+                float * fp = (float *)row_bytes_buf.data();
+                for (int e = 0; e < n_embd_head; e++) {
+                    v0_head[e] = fp[head_idx * n_embd_head + e];
+                }
+            } break;
+        case GGML_TYPE_F16:
+            {
+                ggml_cpu_fp16_to_fp32((ggml_fp16_t *)row_bytes_buf.data(), row_f32.data(), k->ne[0]);
+                for (int e = 0; e < n_embd_head; e++) {
+                    v0_head[e] = row_f32[head_idx * n_embd_head + e];
+                }
+            } break;
+        case GGML_TYPE_BF16:
+            {
+                ggml_cpu_bf16_to_fp32((ggml_bf16_t *)row_bytes_buf.data(), row_f32.data(), k->ne[0]);
+                for (int e = 0; e < n_embd_head; e++) {
+                    v0_head[e] = row_f32[head_idx * n_embd_head + e];
+                }
+            } break;
+        default:
+            ggml_backend_tensor_get(k, row_f32.data(), 0 * k->nb[1], row_bytes);
+            for (int e = 0; e < n_embd_head; e++) {
+                v0_head[e] = row_f32[head_idx * n_embd_head + e];
+            }
+            break;
+    }
+
     for (int i = 1; i < std::min(n_kv, 64); i++) {
         float dot = 0.0f;
-        for (int e = 0; e < n_embd_head; e++) {
-            float v0 = ggml_get_f32_1d(k, head_idx * n_embd_head + e);
-            float vi = ggml_get_f32_1d(k, i * k->ne[0] + head_idx * n_embd_head + e);
-            dot += v0 * vi;
+
+        // Read token i's K row
+        ggml_backend_tensor_get(k, row_bytes_buf.data(), i * k->nb[1], row_bytes);
+
+        switch (k->type) {
+            case GGML_TYPE_F32:
+                {
+                    float * fp = (float *)row_bytes_buf.data();
+                    for (int e = 0; e < n_embd_head; e++) {
+                        float vi = fp[head_idx * n_embd_head + e];
+                        dot += v0_head[e] * vi;
+                    }
+                } break;
+            case GGML_TYPE_F16:
+                ggml_cpu_fp16_to_fp32((ggml_fp16_t *)row_bytes_buf.data(), row_f32.data(), k->ne[0]);
+                for (int e = 0; e < n_embd_head; e++) {
+                    dot += v0_head[e] * row_f32[head_idx * n_embd_head + e];
+                }
+                break;
+            case GGML_TYPE_BF16:
+                ggml_cpu_bf16_to_fp32((ggml_bf16_t *)row_bytes_buf.data(), row_f32.data(), k->ne[0]);
+                for (int e = 0; e < n_embd_head; e++) {
+                    dot += v0_head[e] * row_f32[head_idx * n_embd_head + e];
+                }
+                break;
+            default:
+                ggml_backend_tensor_get(k, row_f32.data(), i * k->nb[1], row_bytes);
+                for (int e = 0; e < n_embd_head; e++) {
+                    dot += v0_head[e] * row_f32[head_idx * n_embd_head + e];
+                }
+                break;
         }
-        total_sim += fabsf(dot) / (float)n_embd_head;
+
+        total_sim += fabsf(dot) * inv_embd;
         count++;
     }
     return count > 0 ? total_sim / count : 0.0f;

@@ -78,6 +78,9 @@ llama_context::llama_context(
     cparams.pooling_type = params.pooling_type;
     cparams.kvzip_enabled = params.kvzip_enabled;
     cparams.kvzip_ratio   = params.kvzip_ratio;
+    cparams.razor_attn_enabled = params.razor_attn_enabled;
+    cparams.razor_attn_window  = params.razor_attn_window;
+    cparams.n_head_kv          = (int)hparams.n_head_kv(0);
 
     cparams.n_ctx            = params.n_ctx           == 0    ? hparams.n_ctx_train           : params.n_ctx;
     cparams.rope_freq_base   = params.rope_freq_base  == 0.0f ? hparams.rope_freq_base_train  : params.rope_freq_base;
@@ -341,6 +344,15 @@ llama_context::llama_context(
         if (kv) {
             kv->kvzip_enabled    = true;
             kv->kvzip_keep_ratio = cparams.kvzip_ratio;
+        }
+    }
+
+    // Wire RazorAttention parameters into the cache.
+    if (cparams.razor_attn_enabled) {
+        auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
+        if (kv) {
+            kv->razor_attn_enabled = true;
+            kv->razor_attn_window  = cparams.razor_attn_window;
         }
     }
 
@@ -3504,6 +3516,9 @@ llama_context_params llama_context_default_params() {
         /*.kv_unified                  =*/ false,
         /*.kvzip_enabled               =*/ false,
         /*.kvzip_ratio                 =*/ 0.33f,
+        /*.razor_attn_enabled          =*/ false,
+        /*.razor_attn_window           =*/ 2048,
+        /*.n_head_kv                   =*/ 0,
         /*.sampler                     =*/ nullptr,
         /*.n_sampler                   =*/ 0,
         /*.ctx_other                   =*/ nullptr,

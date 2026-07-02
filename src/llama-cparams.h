@@ -50,6 +50,10 @@ struct llama_cparams {
     bool kvzip_enabled;
     float kvzip_ratio;
 
+    bool razor_attn_enabled;
+    int  razor_attn_window;
+    int  n_head_kv;  // number of KV heads, set during context init for razor-attn mask sizing
+
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
 
     enum llama_context_type ctx_type;

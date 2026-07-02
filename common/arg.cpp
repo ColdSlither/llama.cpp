@@ -1494,6 +1494,21 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_KVZIP_RATIO").set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--razor-attn"}, {"--no-razor-attn"},
+        "enable RazorAttention head-type specialization for KV-cache (default: disabled)",
+        [](common_params & params, bool value) {
+            params.razor_attn = value;
+        }
+    ).set_env("LLAMA_ARG_RAZOR_ATTN").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--razor-attn-window"}, {"--razor-attn-window"},
+        "local window size in tokens for non-retrieval attention heads (default: 2048)",
+        "N",
+        [](common_params & params, const std::string & value) {
+            params.razor_attn_window = std::stoi(value);
+        }
+    ).set_env("LLAMA_ARG_RAZOR_ATTN_WINDOW").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--cache-idle-slots"},
         {"--no-cache-idle-slots"},
         "save idle slots to the prompt cache on new task, and clear them when using unified KV (default: enabled, requires cache-ram)",

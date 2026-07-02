@@ -387,6 +387,10 @@ extern "C" {
         bool kvzip_enabled;
         float kvzip_ratio;
 
+        // razor-attn: head-type specialization for KV-cache
+        bool razor_attn_enabled;
+        int  razor_attn_window;
+
         // [EXPERIMENTAL]
         // backend sampler chain configuration (make sure the caller keeps the sampler chains alive)
         // note: the samplers must be sampler chains (i.e. use llama_sampler_chain_init)

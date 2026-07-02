@@ -5,6 +5,7 @@
 #include "llama-kv-cells.h"
 #include "llama-memory.h"
 
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -267,6 +268,23 @@ private:
     int      kvzip_counter        = 0;
     float    kvzip_keep_ratio     = 0.33f;
     int      kvzip_trigger        = 512;
+
+    // RazorAttention state
+    bool     razor_attn_enabled   = false;
+    int      razor_attn_window    = 2048;
+    bool     razor_attn_profiled  = false;
+    int32_t  razor_attn_n_head    = 0;   // n_head_kv, set during profiling
+
+    struct head_profile {
+        uint32_t layer;
+        uint32_t head;
+        bool     is_retrieval;
+        float    avg_attn_distance;
+    };
+    std::vector<head_profile> razor_attn_profiles;
+
+    // Persistence: file path for profile storage
+    std::string razor_attn_profile_path;
 
     // this is the SWA type of the cache - not to be confused with the model SWA type
     const llama_swa_type swa_type = LLAMA_SWA_TYPE_NONE;

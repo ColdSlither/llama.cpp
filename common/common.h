@@ -571,6 +571,9 @@ struct common_params {
     bool kvzip             = false; // enable KVzip compression
     float kvzip_ratio      = 0.33f; // KVzip compression ratio
 
+    bool razor_attn       = false;  // enable RazorAttention
+    int  razor_attn_window = 2048;  // local window for non-retrieval heads
+
     bool input_prefix_bos  = false; // prefix BOS to user inputs, preceding input_prefix
     bool use_mmap          = true;  // enable mmap to use filesystem cache
     bool use_direct_io     = false; // read from disk without buffering

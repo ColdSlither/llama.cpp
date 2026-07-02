@@ -36,6 +36,11 @@ static ggml_tensor * build_attn_inp_kq_mask(
     const auto type = cparams.flash_attn ? GGML_TYPE_F16 : GGML_TYPE_F32;
 
     ggml_tensor * res = ggml_new_tensor_4d(ctx, type, n_kv, n_tokens/n_stream, 1, n_stream);
+    if (cparams.razor_attn_enabled && cparams.n_head_kv > 0) {
+        // Expand the mask to be per-head when RazorAttention is enabled
+        // Shape: [n_kv, n_tokens/n_stream, n_head_kv, n_stream]
+        res = ggml_new_tensor_4d(ctx, type, n_kv, n_tokens/n_stream, cparams.n_head_kv, n_stream);
+    }
     ggml_set_input(res);
     ggml_set_name(res, "attn_inp_kq_mask");
 
@@ -55,7 +60,11 @@ static bool can_reuse_kq_mask(
 
     res &= (kq_mask->ne[0] == n_kv);
     res &= (kq_mask->ne[1] == n_tokens/n_stream);
-    res &= (kq_mask->ne[2] == 1);
+    if (cparams.razor_attn_enabled && cparams.n_head_kv > 0) {
+        res &= (kq_mask->ne[2] == cparams.n_head_kv);
+    } else {
+        res &= (kq_mask->ne[2] == 1);
+    }
     res &= (kq_mask->ne[3] == n_stream);
 
     return res;
@@ -703,6 +712,11 @@ static ggml_tensor * dsv4_build_raw_kq_mask(
     const auto type = use_fattn ? GGML_TYPE_F16 : GGML_TYPE_F32;
 
     ggml_tensor * res = ggml_new_tensor_4d(ctx, type, n_kv, n_tokens/n_stream, 1, n_stream);
+    if (cparams.razor_attn_enabled && cparams.n_head_kv > 0) {
+        // Expand the mask to be per-head when RazorAttention is enabled
+        // Shape: [n_kv, n_tokens/n_stream, n_head_kv, n_stream]
+        res = ggml_new_tensor_4d(ctx, type, n_kv, n_tokens/n_stream, cparams.n_head_kv, n_stream);
+    }
     ggml_set_input(res);
     ggml_set_name(res, "attn_inp_kq_mask");
 

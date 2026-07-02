@@ -1892,6 +1892,110 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
         set_input_kq_mask_impl<float>(args, (float *) dst->data, causal_attn);
     }
 
+    // If RazorAttention is active, apply per-head mask adjustments.
+    //
+    // The mask tensor now has shape (n_kv, n_tps, n_head, n_stream) instead of
+    // (n_kv, n_tps, 1, n_stream). Head 0 already has the correct base causal/SWA mask.
+    // For each additional head:
+    //   - Retrieval heads: copy from head 0 (full context, no change)
+    //   - Local heads: copy from head 0, then mask positions outside the local window
+    if (razor_attn_enabled && razor_attn_profiled) {
+        const int64_t n_head   = dst->ne[2];
+        const int64_t stride_h = n_kv * n_tps; // per-head stride within one stream
+
+        if (dst->type == GGML_TYPE_F16) {
+            auto * data = (ggml_fp16_t *) dst->data;
+            for (int64_t s = 0; s < n_stream; ++s) {
+                for (int64_t h = 1; h < n_head; ++h) {
+                    const uint64_t off_s = s * n_head * stride_h;
+                    // Copy from head 0 (base mask)
+                    memcpy(data + off_s + h * stride_h,
+                           data + off_s + 0 * stride_h,
+                           stride_h * sizeof(ggml_fp16_t));
+
+                    // Check if this head is "local" (not retrieval)
+                    bool is_local = true;
+                    for (const auto & hp : razor_attn_profiles) {
+                        // We need the layer index; for profile matching we search
+                        // but the mask is layer-agnostic, so we store per-layer profiles.
+                        // For now, treat all stored profiles that match this head idx
+                        if (hp.head == (uint32_t)h && hp.is_retrieval) {
+                            is_local = false;
+                            break;
+                        }
+                    }
+                    if (!is_local) continue;
+
+                    // For local heads: mask positions outside local_window
+                    // Iterate over query positions then KV positions
+                    for (int64_t ii = 0; ii < n_tps; ++ii) {
+                        const uint32_t i = s*n_tps + ii;
+                        const llama_seq_id seq_id = ubatch->seq_id[i][0];
+                        const auto & cells = v_cells.at(seq_to_stream[seq_id]);
+                        const int64_t p_q = ubatch->pos[i];
+
+                        const uint64_t idst = off_s + h * stride_h + ii * n_kv;
+                        for (int64_t jj = 0; jj < n_kv; ++jj) {
+                            if (cells.is_empty(jj)) {
+                                data[idst + jj] = GGML_FP16_TO_FP32(data[idst + jj]) > -1e20f
+                                    ? GGML_FP32_TO_FP16(-INFINITY)
+                                    : data[idst + jj];
+                                continue;
+                            }
+                            const int64_t p_kv = cells.pos_get(jj);
+                            if (p_q - p_kv > (int64_t)razor_attn_window) {
+                                data[idst + jj] = GGML_FP32_TO_FP16(-INFINITY);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            auto * data = (float *) dst->data;
+            for (int64_t s = 0; s < n_stream; ++s) {
+                for (int64_t h = 1; h < n_head; ++h) {
+                    const uint64_t off_s = s * n_head * stride_h;
+                    // Copy from head 0 (base mask)
+                    memcpy(data + off_s + h * stride_h,
+                           data + off_s + 0 * stride_h,
+                           stride_h * sizeof(float));
+
+                    // Check if this head is local
+                    bool is_local = true;
+                    for (const auto & hp : razor_attn_profiles) {
+                        if (hp.head == (uint32_t)h && hp.is_retrieval) {
+                            is_local = false;
+                            break;
+                        }
+                    }
+                    if (!is_local) continue;
+
+                    // For local heads: mask positions outside local_window
+                    for (int64_t ii = 0; ii < n_tps; ++ii) {
+                        const uint32_t i = s*n_tps + ii;
+                        const llama_seq_id seq_id = ubatch->seq_id[i][0];
+                        const auto & cells = v_cells.at(seq_to_stream[seq_id]);
+                        const int64_t p_q = ubatch->pos[i];
+
+                        const uint64_t idst = off_s + h * stride_h + ii * n_kv;
+                        for (int64_t jj = 0; jj < n_kv; ++jj) {
+                            if (cells.is_empty(jj)) {
+                                if (data[idst + jj] > -1e20f) {
+                                    data[idst + jj] = -INFINITY;
+                                }
+                                continue;
+                            }
+                            const int64_t p_kv = cells.pos_get(jj);
+                            if (p_q - p_kv > (int64_t)razor_attn_window) {
+                                data[idst + jj] = -INFINITY;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     //const int64_t t_end = ggml_time_us();
 
     //LLAMA_LOG_ERROR("%s: kq mask time: %0.3f ms\n", __func__, (t_end - t_start)/1000.0);

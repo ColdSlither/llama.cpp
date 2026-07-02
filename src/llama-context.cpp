@@ -2277,9 +2277,13 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     if (cparams.kvzip_enabled) {
         auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
         if (kv) {
+            // Lazy profile on first decode with enough tokens (unconditional — functions check internal state)
             kv->kvzip_compress();
         }
     }
+
+    // Lazy RazorAttention/xKV profiling (fires independently of kvzip trigger)
+    // Note: actual profiling is done inside kvzip_compress which has K tensor access.
 
     return n_outputs_max;
 }

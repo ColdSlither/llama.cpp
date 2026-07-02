@@ -1331,6 +1331,10 @@ void llama_kv_cache::kvzip_compress() {
         return;
     }
 
+    // Lazy profiling: fire once on first call regardless of counter (requires 16+ tokens).
+    // DISABLED for v1 — profiling needs a safer integration point.
+    // To enable: uncomment and ensure v_cells is properly initialized before access.
+
     kvzip_counter++;
     if (kvzip_counter < kvzip_trigger) {
         return;
@@ -1509,7 +1513,7 @@ static float razor_compute_echo_score(
         float dot = 0.0f;
         for (int e = 0; e < n_embd_head; e++) {
             float v0 = ggml_get_f32_1d(k, head_idx * n_embd_head + e);
-            float vi = ggml_get_f32_1d(k, i * n_embd_head + head_idx * n_embd_head * n_kv + e);
+            float vi = ggml_get_f32_1d(k, i * k->ne[0] + head_idx * n_embd_head + e);
             dot += v0 * vi;
         }
         total_sim += fabsf(dot) / (float)n_embd_head;

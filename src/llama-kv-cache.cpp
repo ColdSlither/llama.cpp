@@ -2004,6 +2004,65 @@ static bool xkv_power_iteration(
     return true;
 }
 
+// xKV tensor access helpers — safe replacements for ggml_get_f32_1d on the
+// flat-1D pattern. The flat pattern aborts on block-quantized types and is
+// brittle on f16/bf16. These helpers use ggml_backend_tensor_get with proper
+// nb[] strides and type-aware dequantization. (See depthkv_compute_sensitivity
+// for the per-row pattern this mirrors.)
+static void xkv_read_row_f32(const ggml_tensor * t, int64_t i, int n_embd, std::vector<float> & out) {
+    out.assign(n_embd, 0.0f);
+    const size_t row_bytes = ggml_row_size(t->type, n_embd);
+    std::vector<uint8_t> buf(row_bytes);
+    ggml_backend_tensor_get(t, buf.data(), (size_t)i * t->nb[1], row_bytes);
+    switch (t->type) {
+        case GGML_TYPE_F32: {
+            const float * fp = (const float *) buf.data();
+            for (int e = 0; e < n_embd; e++) out[e] = fp[e];
+        } break;
+        case GGML_TYPE_F16:
+            ggml_cpu_fp16_to_fp32((const ggml_fp16_t *) buf.data(), out.data(), n_embd);
+            break;
+        case GGML_TYPE_BF16:
+            ggml_cpu_bf16_to_fp32((const ggml_bf16_t *) buf.data(), out.data(), n_embd);
+            break;
+        default:
+            // Block-quantized K/V is uncommon; if encountered, leave zeros so
+            // the va == 0.0 check in callers skips this row. Better than crashing.
+            break;
+    }
+}
+
+static double xkv_read_elem_f64(const ggml_tensor * t, int64_t row_idx, int64_t col_idx) {
+    const size_t byte_offset = (size_t)(row_idx * t->nb[1] + col_idx * t->nb[0]);
+    switch (t->type) {
+        case GGML_TYPE_F32: {
+            float v;
+            ggml_backend_tensor_get(t, &v, byte_offset, sizeof(float));
+            return (double)v;
+        }
+        case GGML_TYPE_F16: {
+            ggml_fp16_t v;
+            ggml_backend_tensor_get(t, &v, byte_offset, sizeof(ggml_fp16_t));
+            float f32;
+            ggml_cpu_fp16_to_fp32(&v, &f32, 1);
+            return (double) f32;
+        }
+        case GGML_TYPE_BF16: {
+            ggml_bf16_t v;
+            ggml_backend_tensor_get(t, &v, byte_offset, sizeof(ggml_bf16_t));
+            float f32;
+            ggml_cpu_bf16_to_fp32(&v, &f32, 1);
+            return (double) f32;
+        }
+        default: {
+            // Block-quantized: dequantize the whole row and pick the element.
+            std::vector<float> row;
+            xkv_read_row_f32(t, row_idx, (int) t->ne[0], row);
+            return (double) row[(size_t) col_idx];
+        }
+    }
+}
+
 void llama_kv_cache::xkv_compute_basis() {
     if (!xkv_enabled) {
         return;
@@ -2056,11 +2115,13 @@ void llama_kv_cache::xkv_compute_basis() {
     for (auto * t : k_sampled) {
         int n_rows = (int)t->ne[1];
         for (int i = 0; i < n_rows; i++) {
+            std::vector<float> row;
+            xkv_read_row_f32(t, i, n_embd, row);
             for (int a = 0; a < n_embd; a++) {
-                double va = ggml_get_f32_1d(t, (int64_t)i * n_embd + a);
+                double va = (double) row[a];
                 if (va == 0.0) continue;
                 for (int b = 0; b < n_embd; b++) {
-                    double vb = ggml_get_f32_1d(t, (int64_t)i * n_embd + b);
+                    double vb = (double) row[b];
                     G[a * n_embd + b] += va * vb;
                 }
             }
@@ -2111,10 +2172,10 @@ void llama_kv_cache::xkv_compute_basis() {
             int n_embd_v_gqa = (int)t->ne[1];
             for (int i = 0; i < n_rows; i++) {
                 for (int a = 0; a < n_embd_v_gqa; a++) {
-                    double va = ggml_get_f32_1d(t, (int64_t)a * n_rows + i);
+                    double va = xkv_read_elem_f64(t, a, i);  // column-major (col, row)
                     if (va == 0.0) continue;
                     for (int b = 0; b < n_embd_v_gqa; b++) {
-                        double vb = ggml_get_f32_1d(t, (int64_t)b * n_rows + i);
+                        double vb = xkv_read_elem_f64(t, b, i);
                         Gv[a * n_embd_v_gqa + b] += va * vb;
                     }
                 }
@@ -2122,11 +2183,13 @@ void llama_kv_cache::xkv_compute_basis() {
             n_embd_v = n_embd_v_gqa;
         } else {
             for (int i = 0; i < n_rows; i++) {
+                std::vector<float> row;
+                xkv_read_row_f32(t, i, n_embd_v, row);
                 for (int a = 0; a < n_embd_v; a++) {
-                    double va = ggml_get_f32_1d(t, (int64_t)i * n_embd_v + a);
+                    double va = (double) row[a];
                     if (va == 0.0) continue;
                     for (int b = 0; b < n_embd_v; b++) {
-                        double vb = ggml_get_f32_1d(t, (int64_t)i * n_embd_v + b);
+                        double vb = (double) row[b];
                         Gv[a * n_embd_v + b] += va * vb;
                     }
                 }
@@ -2193,9 +2256,11 @@ void llama_kv_cache::xkv_project() {
             double sum = 0.0;
             int count = 0;
             for (int i = 0; i < n_kv; i++) {
+                std::vector<float> row;
+                xkv_read_row_f32(k_tensor, i, n_embd, row);
                 double dot = 0.0;
                 for (int e = 0; e < n_embd && e < xkv_basis_data.n_embd_k; e++) {
-                    double ke = ggml_get_f32_1d(k_tensor, (int64_t)i * n_embd + e);
+                    double ke = (double) row[e];
                     dot += ke * xkv_basis_data.U_k[s * xkv_basis_data.n_embd_k + e];
                 }
                 sum += dot;
@@ -2219,12 +2284,14 @@ void llama_kv_cache::xkv_project() {
                 if (v_trans) {
                     // V transposed: V[e][i]
                     for (int e = 0; e < n_embd_v_gqa; e++) {
-                        double ve = ggml_get_f32_1d(v_tensor, (int64_t)e * n_kv_v + i);
+                        double ve = xkv_read_elem_f64(v_tensor, e, i);
                         dot += ve * xkv_basis_data.U_v[s * xkv_basis_data.n_embd_v + e];
                     }
                 } else {
+                    std::vector<float> row;
+                    xkv_read_row_f32(v_tensor, i, n_embd_v_gqa, row);
                     for (int e = 0; e < n_embd_v_gqa; e++) {
-                        double ve = ggml_get_f32_1d(v_tensor, (int64_t)i * n_embd_v_gqa + e);
+                        double ve = (double) row[e];
                         dot += ve * xkv_basis_data.U_v[s * xkv_basis_data.n_embd_v + e];
                     }
                 }

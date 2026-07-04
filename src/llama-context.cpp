@@ -7,6 +7,7 @@
 #include "llama-batch.h"
 #include "llama-io.h"
 #include "llama-kv-cache.h"
+#include "llama-kv-cache-iswa.h"
 #include "llama-memory.h"
 #include "llama-mmap.h"
 #include "llama-model.h"
@@ -79,6 +80,8 @@ llama_context::llama_context(
     cparams.pooling_type = params.pooling_type;
     cparams.kvzip_enabled = params.kvzip_enabled;
     cparams.kvzip_ratio   = params.kvzip_ratio;
+    cparams.kvzip_trigger = params.kvzip_trigger;
+    cparams.kvzip_pos_bias = params.kvzip_pos_bias;
     cparams.depthkv_enabled = params.depthkv_enabled;
     cparams.depthkv_min_keep = params.depthkv_min_keep;
     cparams.depthkv_max_keep = params.depthkv_max_keep;
@@ -352,9 +355,12 @@ llama_context::llama_context(
     // Wire KVzip parameters into the cache.
     if (cparams.kvzip_enabled) {
         auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
+        if (!kv) { if (auto * iswa = dynamic_cast<llama_kv_cache_iswa *>(memory.get())) kv = iswa->get_base(); }
         if (kv) {
             kv->set_kvzip_enabled(true);
             kv->set_kvzip_keep_ratio(cparams.kvzip_ratio);
+            kv->set_kvzip_trigger(cparams.kvzip_trigger);
+            kv->set_kvzip_pos_bias(cparams.kvzip_pos_bias);
         }
         if (cparams.depthkv_enabled && kv) {
             kv->set_depthkv_enabled(true);
@@ -2276,6 +2282,7 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     // KVzip: compress cache after decode.
     if (cparams.kvzip_enabled) {
         auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
+        if (!kv) { if (auto * iswa = dynamic_cast<llama_kv_cache_iswa *>(memory.get())) kv = iswa->get_base(); }
         if (kv) {
             // Lazy profile on first decode with enough tokens (unconditional — functions check internal state)
             kv->kvzip_compress();
@@ -3552,6 +3559,8 @@ llama_context_params llama_context_default_params() {
         /*.kv_unified                  =*/ false,
         /*.kvzip_enabled               =*/ false,
         /*.kvzip_ratio                 =*/ 0.33f,
+        /*.kvzip_trigger               =*/ 512,
+        /*.kvzip_pos_bias              =*/ 0.1f,
         /*.razor_attn_enabled          =*/ false,
         /*.razor_attn_window           =*/ 2048,
         /*.depthkv_enabled             =*/ false,

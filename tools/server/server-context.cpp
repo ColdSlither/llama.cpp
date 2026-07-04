@@ -1159,6 +1159,8 @@ private:
             params_base.load_progress_callback_user_data = &load_progress_text;
         }
 
+        SRV_INF("kvzip: params_base.kvzip=%d\n", params_base.kvzip);
+
         llama_init = common_init_from_params(params_base);
 
         model_tgt = llama_init->model();

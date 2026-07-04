@@ -50,6 +50,8 @@ struct llama_cparams {
 
     bool kvzip_enabled;
     float kvzip_ratio;
+    int   kvzip_trigger;
+    float kvzip_pos_bias;
 
     bool razor_attn_enabled;
     int  razor_attn_window;

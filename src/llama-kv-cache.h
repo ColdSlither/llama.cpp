@@ -188,6 +188,8 @@ public:
     // Setter methods for KVzip/DepthKV/RazorAttention/FastKV/xKV params
     void set_kvzip_enabled(bool v)        { kvzip_enabled = v; }
     void set_kvzip_keep_ratio(float v)    { kvzip_keep_ratio = v; }
+    void set_kvzip_trigger(int v)         { kvzip_trigger = v; }
+    void set_kvzip_pos_bias(float v)      { kvzip_pos_bias = v; }
     void set_depthkv_enabled(bool v)      { depthkv_enabled = v; }
     void set_depthkv_min_keep(float v)    { depthkv_min_keep = v; }
     void set_depthkv_max_keep(float v)    { depthkv_max_keep = v; }
@@ -332,6 +334,7 @@ private:
     int      kvzip_counter        = 0;
     float    kvzip_keep_ratio     = 0.33f;
     int      kvzip_trigger        = 512;
+    float    kvzip_pos_bias       = 0.1f;
 
     // DepthKV — layer-dependent budgets
     bool     depthkv_enabled      = false;

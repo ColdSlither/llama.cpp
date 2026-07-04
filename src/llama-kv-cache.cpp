@@ -1233,7 +1233,8 @@ static void kvzip_score_tokens(
     const ggml_tensor * k,
     const ggml_tensor * v,
     float * scores,
-    int n_kv)
+    int n_kv,
+    float pos_bias = 0.0f)
 {
     const int n_embd_k = k->ne[0];
     const int n_embd_v = v->ne[0];
@@ -1307,7 +1308,12 @@ static void kvzip_score_tokens(
             sum_v += row_v[e] * row_v[e];
         }
 
-        scores[i] = sqrtf(sum_k) + sqrtf(sum_v);
+        // Base magnitude score (kvzip paper formulation)
+        float base_score = sqrtf(sum_k) + sqrtf(sum_v);
+        // Recency bias: prefer early tokens when magnitudes are similar.
+        // pos_bias=0 disables, 0.1 is mild (kvzip default), higher values stronger.
+        float pos_factor = (n_kv > 1) ? (1.0f - (float)i / (float)(n_kv - 1)) : 0.0f;
+        scores[i] = base_score * (1.0f + pos_bias * pos_factor);
     }
 }
 
@@ -1316,7 +1322,8 @@ static int kvzip_compact(
     ggml_tensor * v,
     llama_kv_cells & cells,
     float keep_ratio,
-    int n_kv_used)
+    int n_kv_used,
+    float pos_bias = 0.0f)
 {
     if (n_kv_used <= 0 || keep_ratio >= 1.0f) {
         return n_kv_used;
@@ -1331,7 +1338,38 @@ static int kvzip_compact(
 
     // Score tokens.
     std::vector<float> scores(n_kv_used);
-    kvzip_score_tokens(k, v, scores.data(), n_kv_used);
+    kvzip_score_tokens(k, v, scores.data(), n_kv_used, pos_bias);
+
+    // Diagnostic: log score distribution + which positions are kept
+    if (n_kv_used >= 4) {
+        // Find top-10 scoring positions (what kvzip will keep)
+        std::vector<int> sort_idx(n_kv_used);
+        std::iota(sort_idx.begin(), sort_idx.end(), 0);
+        std::partial_sort(sort_idx.begin(), sort_idx.begin() + std::min(10, n_kv_used), sort_idx.end(),
+            [&](int a, int b) { return scores[a] > scores[b]; });
+
+        // Find scores in the needle region (positions 0-50)
+        int needle_kept = 0;
+        int needle_total = std::min(50, n_kv_used);
+        for (int i = 0; i < 10 && i < n_kv_used; i++) {
+            if (sort_idx[i] < 50) needle_kept++;
+        }
+
+        LLAMA_LOG_INFO(
+            "kvzip: n_used=%d keep=%d needle_kept_in_top10=%d/%d "
+            "top10_pos=[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d]\n",
+            n_kv_used, n_keep, needle_kept, needle_total,
+            sort_idx[0],
+            n_kv_used > 1 ? sort_idx[1] : -1,
+            n_kv_used > 2 ? sort_idx[2] : -1,
+            n_kv_used > 3 ? sort_idx[3] : -1,
+            n_kv_used > 4 ? sort_idx[4] : -1,
+            n_kv_used > 5 ? sort_idx[5] : -1,
+            n_kv_used > 6 ? sort_idx[6] : -1,
+            n_kv_used > 7 ? sort_idx[7] : -1,
+            n_kv_used > 8 ? sort_idx[8] : -1,
+            n_kv_used > 9 ? sort_idx[9] : -1);
+    }
 
     // Find top-k indices.
     std::vector<int> indices(n_kv_used);
@@ -1391,11 +1429,8 @@ void llama_kv_cache::kvzip_compress() {
         return;
     }
 
-    // Lazy profiling: fire once on first call regardless of counter (requires 16+ tokens).
-    // DISABLED for v1 — profiling needs a safer integration point.
-    // To enable: uncomment and ensure v_cells is properly initialized before access.
-
     kvzip_counter++;
+    LLAMA_LOG_INFO("kvzip: compress called (counter=%d, trigger=%d)\n", kvzip_counter, kvzip_trigger);
     if (kvzip_counter < kvzip_trigger) {
         return;
     }
@@ -1422,7 +1457,7 @@ void llama_kv_cache::kvzip_compress() {
             keep = depthkv_sensitivity_to_keep(sens, depthkv_min_keep, depthkv_max_keep);
         }
 
-        kvzip_compact(layer.k, layer.v, v_cells[0], keep, n_used);
+        kvzip_compact(layer.k, layer.v, v_cells[0], keep, n_used, kvzip_pos_bias);
     }
 }
 

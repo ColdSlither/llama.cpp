@@ -386,6 +386,8 @@ extern "C" {
         // kvzip: query-agnostic KV-cache compression
         bool kvzip_enabled;
         float kvzip_ratio;
+        int   kvzip_trigger;
+        float kvzip_pos_bias;
 
         // razor-attn: head-type specialization for KV-cache
         bool razor_attn_enabled;

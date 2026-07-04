@@ -570,6 +570,8 @@ struct common_params {
     bool kv_unified        = false; // enable unified KV cache
     bool kvzip             = false; // enable KVzip compression
     float kvzip_ratio      = 0.33f; // KVzip compression ratio
+    int   kvzip_trigger    = 512;   // KVzip compression trigger in decode calls
+    float kvzip_pos_bias   = 0.1f;  // KVzip score position bias (0 = off, 0.1 = mild)
 
     bool razor_attn       = false;  // enable RazorAttention
     int  razor_attn_window = 2048;

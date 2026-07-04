@@ -81,6 +81,7 @@ llama_context::llama_context(
     cparams.kvzip_enabled = params.kvzip_enabled;
     cparams.kvzip_ratio   = params.kvzip_ratio;
     cparams.kvzip_trigger = params.kvzip_trigger;
+    cparams.kvzip_min_latest = params.kvzip_min_latest;
     cparams.kvzip_pos_bias = params.kvzip_pos_bias;
     cparams.depthkv_enabled = params.depthkv_enabled;
     cparams.depthkv_min_keep = params.depthkv_min_keep;
@@ -360,6 +361,7 @@ llama_context::llama_context(
             kv->set_kvzip_enabled(true);
             kv->set_kvzip_keep_ratio(cparams.kvzip_ratio);
             kv->set_kvzip_trigger(cparams.kvzip_trigger);
+            kv->set_kvzip_min_latest(cparams.kvzip_min_latest);
             kv->set_kvzip_pos_bias(cparams.kvzip_pos_bias);
         }
         if (cparams.depthkv_enabled && kv) {
@@ -3562,6 +3564,7 @@ llama_context_params llama_context_default_params() {
         /*.kvzip_enabled               =*/ false,
         /*.kvzip_ratio                 =*/ 0.33f,
         /*.kvzip_trigger               =*/ 512,
+        /*.kvzip_min_latest             =*/ 0,
         /*.kvzip_pos_bias              =*/ 0.1f,
         /*.razor_attn_enabled          =*/ false,
         /*.razor_attn_window           =*/ 2048,

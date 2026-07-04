@@ -1501,6 +1501,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_KVZIP_TRIGGER").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
     add_opt(common_arg(
+        {"--kvzip-min-latest"}, "N",
+        string_format("Keep this many latest tokens regardless of score (default: %d, 0=disable)", params.kvzip_min_latest),
+        [](common_params & params, int value) {
+            params.kvzip_min_latest = value;
+        }
+    ).set_env("LLAMA_ARG_KVZIP_MIN_LATEST").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
+    add_opt(common_arg(
         {"--kvzip-bias"}, "F",
         string_format("KVzip score position bias (0 = off, default: %.2f)", params.kvzip_pos_bias),
         [](common_params & params, const std::string & value) {

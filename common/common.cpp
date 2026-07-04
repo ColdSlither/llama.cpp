@@ -1600,6 +1600,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.kvzip_enabled     = params.kvzip;
     cparams.kvzip_ratio       = params.kvzip_ratio;
     cparams.kvzip_trigger     = params.kvzip_trigger;
+    cparams.kvzip_min_latest  = params.kvzip_min_latest;
     cparams.kvzip_pos_bias    = params.kvzip_pos_bias;
     cparams.razor_attn_enabled = params.razor_attn;
     cparams.razor_attn_window  = params.razor_attn_window;

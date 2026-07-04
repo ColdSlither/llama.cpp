@@ -387,6 +387,7 @@ extern "C" {
         bool kvzip_enabled;
         float kvzip_ratio;
         int   kvzip_trigger;
+        int   kvzip_min_latest;
         float kvzip_pos_bias;
 
         // razor-attn: head-type specialization for KV-cache

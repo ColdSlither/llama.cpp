@@ -1323,7 +1323,8 @@ static int kvzip_compact(
     llama_kv_cells & cells,
     float keep_ratio,
     int n_kv_used,
-    float pos_bias = 0.0f)
+    float pos_bias = 0.0f,
+    int min_latest = 0)
 {
     if (n_kv_used <= 0 || keep_ratio >= 1.0f) {
         return n_kv_used;
@@ -1339,6 +1340,14 @@ static int kvzip_compact(
     // Score tokens.
     std::vector<float> scores(n_kv_used);
     kvzip_score_tokens(k, v, scores.data(), n_kv_used, pos_bias);
+
+    // Always keep the latest min_latest tokens (response-in-progress immunity)
+    if (min_latest > 0) {
+        int n_latest = std::min(min_latest, n_kv_used);
+        for (int i = n_kv_used - n_latest; i < n_kv_used; i++) {
+            scores[i] = std::numeric_limits<float>::max();
+        }
+    }
 
     // Diagnostic: log score distribution + which positions are kept
     if (n_kv_used >= 4) {
@@ -1457,7 +1466,7 @@ void llama_kv_cache::kvzip_compress() {
             keep = depthkv_sensitivity_to_keep(sens, depthkv_min_keep, depthkv_max_keep);
         }
 
-        kvzip_compact(layer.k, layer.v, v_cells[0], keep, n_used, kvzip_pos_bias);
+        kvzip_compact(layer.k, layer.v, v_cells[0], keep, n_used, kvzip_pos_bias, kvzip_min_latest);
     }
 }
 

@@ -571,6 +571,7 @@ struct common_params {
     bool kvzip             = false; // enable KVzip compression
     float kvzip_ratio      = 0.33f; // KVzip compression ratio
     int   kvzip_trigger    = 512;   // KVzip compression trigger in decode calls
+    int   kvzip_min_latest = 0;     // Keep this many latest tokens regardless of score (0=disable)
     float kvzip_pos_bias   = 0.1f;  // KVzip score position bias (0 = off, 0.1 = mild)
 
     bool razor_attn       = false;  // enable RazorAttention

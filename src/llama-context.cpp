@@ -378,6 +378,7 @@ llama_context::llama_context(
     // Wire RazorAttention parameters into the cache.
     if (cparams.razor_attn_enabled) {
         auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
+        if (!kv) { if (auto * iswa = dynamic_cast<llama_kv_cache_iswa *>(memory.get())) kv = iswa->get_base(); }
         if (kv) {
             kv->set_razor_attn_enabled(true);
             kv->set_razor_attn_window(cparams.razor_attn_window);
@@ -387,6 +388,7 @@ llama_context::llama_context(
     // Wire xKV parameters into the cache.
     if (cparams.xkv_enabled) {
         auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
+        if (!kv) { if (auto * iswa = dynamic_cast<llama_kv_cache_iswa *>(memory.get())) kv = iswa->get_base(); }
         if (kv) {
             kv->set_xkv_enabled(true);
             kv->set_xkv_rank(cparams.xkv_rank);

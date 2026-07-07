@@ -1416,12 +1416,22 @@ static int kvzip_compact(
     ggml_backend_tensor_set(k, k_new.data(), 0, k_new.size());
     ggml_backend_tensor_set(v, v_new.data(), 0, v_new.size());
 
-    // Update cell metadata: compact positions.
+    // Snapshot kept-cell metadata BEFORE any mutation (avoids in-place aliasing).
+    std::vector<llama_pos>    kept_pos(n_keep);
+    std::vector<llama_seq_id> kept_seq(n_keep);
     for (int i = 0; i < n_keep; i++) {
         int src = indices[i];
-        if (src != i) {
-            cells.pos_set(i, cells.pos_get(src));
-        }
+        kept_pos[i] = cells.pos_get(static_cast<uint32_t>(src));
+        kept_seq[i] = cells.seq_get(static_cast<uint32_t>(src));
+    }
+    // Clear ALL cells [0, n_kv_used) — both kept (will re-set) and dropped.
+    for (int i = 0; i < n_kv_used; i++) {
+        cells.rm(static_cast<uint32_t>(i));
+    }
+    // Re-mark the front n_keep with snapshot positions + sequence membership.
+    for (int i = 0; i < n_keep; i++) {
+        cells.pos_set(static_cast<uint32_t>(i), kept_pos[i]);
+        cells.seq_add(static_cast<uint32_t>(i), kept_seq[i]);
     }
 
     return n_keep;

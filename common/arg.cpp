@@ -1485,35 +1485,35 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, bool value) {
             params.kvzip = value;
         }
-    ).set_env("LLAMA_ARG_KVZIP").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
+    ).set_env("LLAMA_ARG_KVZIP").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
         {"--kvzip-ratio"}, "N",
         string_format("KVzip cache compression ratio (default: %.2f)", params.kvzip_ratio),
         [](common_params & params, const std::string & value) {
             params.kvzip_ratio = std::stof(value);
         }
-    ).set_env("LLAMA_ARG_KVZIP_RATIO").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
+    ).set_env("LLAMA_ARG_KVZIP_RATIO").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
         {"--kvzip-trigger"}, "N",
         string_format("KVzip compression trigger in decode calls (default: %d)", params.kvzip_trigger),
         [](common_params & params, int value) {
             params.kvzip_trigger = value;
         }
-    ).set_env("LLAMA_ARG_KVZIP_TRIGGER").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
+    ).set_env("LLAMA_ARG_KVZIP_TRIGGER").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
         {"--kvzip-min-latest"}, "N",
         string_format("Keep this many latest tokens regardless of score (default: %d, 0=disable)", params.kvzip_min_latest),
         [](common_params & params, int value) {
             params.kvzip_min_latest = value;
         }
-    ).set_env("LLAMA_ARG_KVZIP_MIN_LATEST").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
+    ).set_env("LLAMA_ARG_KVZIP_MIN_LATEST").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
         {"--kvzip-bias"}, "F",
         string_format("KVzip score position bias (0 = off, default: %.2f)", params.kvzip_pos_bias),
         [](common_params & params, const std::string & value) {
             params.kvzip_pos_bias = std::stof(value);
         }
-    ).set_env("LLAMA_ARG_KVZIP_BIAS").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}));
+    ).set_env("LLAMA_ARG_KVZIP_BIAS").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
         {"--razor-attn"}, {"--no-razor-attn"},
         "enable RazorAttention head-type specialization for KV-cache (default: disabled)",

@@ -9,6 +9,8 @@
 #include "llama-kv-cache.h"
 #include "llama-kv-cache-iswa.h"
 #include "llama-memory.h"
+#include "llama-memory-hybrid.h"
+#include "llama-memory-hybrid-iswa.h"
 #include "llama-mmap.h"
 #include "llama-model.h"
 #include "llama-ext.h"
@@ -356,7 +358,16 @@ llama_context::llama_context(
     // Wire KVzip parameters into the cache.
     if (cparams.kvzip_enabled) {
         auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
-        if (!kv) { if (auto * iswa = dynamic_cast<llama_kv_cache_iswa *>(memory.get())) kv = iswa->get_base(); }
+        if (!kv) {
+            if (auto * iswa = dynamic_cast<llama_kv_cache_iswa *>(memory.get())) {
+                kv = iswa->get_base();
+            } else if (auto * hyb = dynamic_cast<llama_memory_hybrid *>(memory.get())) {
+                kv = hyb->get_mem_attn();
+            } else if (auto * hyb_iswa = dynamic_cast<llama_memory_hybrid_iswa *>(memory.get())) {
+                auto * attn = hyb_iswa->get_mem_attn();
+                kv = attn ? attn->get_base() : nullptr;
+            }
+        }
         if (kv) {
             kv->set_kvzip_enabled(true);
             kv->set_kvzip_keep_ratio(cparams.kvzip_ratio);
@@ -380,7 +391,16 @@ llama_context::llama_context(
     // Wire RazorAttention parameters into the cache.
     if (cparams.razor_attn_enabled) {
         auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
-        if (!kv) { if (auto * iswa = dynamic_cast<llama_kv_cache_iswa *>(memory.get())) kv = iswa->get_base(); }
+        if (!kv) {
+            if (auto * iswa = dynamic_cast<llama_kv_cache_iswa *>(memory.get())) {
+                kv = iswa->get_base();
+            } else if (auto * hyb = dynamic_cast<llama_memory_hybrid *>(memory.get())) {
+                kv = hyb->get_mem_attn();
+            } else if (auto * hyb_iswa = dynamic_cast<llama_memory_hybrid_iswa *>(memory.get())) {
+                auto * attn = hyb_iswa->get_mem_attn();
+                kv = attn ? attn->get_base() : nullptr;
+            }
+        }
         if (kv) {
             kv->set_razor_attn_enabled(true);
             kv->set_razor_attn_window(cparams.razor_attn_window);
@@ -390,7 +410,16 @@ llama_context::llama_context(
     // Wire xKV parameters into the cache.
     if (cparams.xkv_enabled) {
         auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
-        if (!kv) { if (auto * iswa = dynamic_cast<llama_kv_cache_iswa *>(memory.get())) kv = iswa->get_base(); }
+        if (!kv) {
+            if (auto * iswa = dynamic_cast<llama_kv_cache_iswa *>(memory.get())) {
+                kv = iswa->get_base();
+            } else if (auto * hyb = dynamic_cast<llama_memory_hybrid *>(memory.get())) {
+                kv = hyb->get_mem_attn();
+            } else if (auto * hyb_iswa = dynamic_cast<llama_memory_hybrid_iswa *>(memory.get())) {
+                auto * attn = hyb_iswa->get_mem_attn();
+                kv = attn ? attn->get_base() : nullptr;
+            }
+        }
         if (kv) {
             kv->set_xkv_enabled(true);
             kv->set_xkv_rank(cparams.xkv_rank);
@@ -2286,7 +2315,16 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     // KVzip: compress cache after decode.
     if (cparams.kvzip_enabled) {
         auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
-        if (!kv) { if (auto * iswa = dynamic_cast<llama_kv_cache_iswa *>(memory.get())) kv = iswa->get_base(); }
+        if (!kv) {
+            if (auto * iswa = dynamic_cast<llama_kv_cache_iswa *>(memory.get())) {
+                kv = iswa->get_base();
+            } else if (auto * hyb = dynamic_cast<llama_memory_hybrid *>(memory.get())) {
+                kv = hyb->get_mem_attn();
+            } else if (auto * hyb_iswa = dynamic_cast<llama_memory_hybrid_iswa *>(memory.get())) {
+                auto * attn = hyb_iswa->get_mem_attn();
+                kv = attn ? attn->get_base() : nullptr;
+            }
+        }
         if (kv) {
             // Lazy profile on first decode with enough tokens (unconditional — functions check internal state)
             kv->kvzip_compress();

@@ -1417,6 +1417,9 @@ static int kvzip_compact(
     ggml_backend_tensor_set(v, v_new.data(), 0, v_new.size());
 
     // Snapshot kept-cell metadata BEFORE any mutation (avoids in-place aliasing).
+    // NOTE: seq_get() returns -1 for cells with zero sequences (count != 1, assert
+    // stripped in release builds). Such cells are valid KV entries but have no
+    // sequence membership yet (e.g. mid-prefill). Guard the restore below.
     std::vector<llama_pos>    kept_pos(n_keep);
     std::vector<llama_seq_id> kept_seq(n_keep);
     for (int i = 0; i < n_keep; i++) {
@@ -1429,9 +1432,15 @@ static int kvzip_compact(
         cells.rm(static_cast<uint32_t>(i));
     }
     // Re-mark the front n_keep with snapshot positions + sequence membership.
+    // Guard: skip pos_set/seq_add for cells whose snapshot was invalid (-1),
+    // i.e. cells that had no position or no sequence at snapshot time.
     for (int i = 0; i < n_keep; i++) {
-        cells.pos_set(static_cast<uint32_t>(i), kept_pos[i]);
-        cells.seq_add(static_cast<uint32_t>(i), kept_seq[i]);
+        if (kept_pos[i] >= 0) {
+            cells.pos_set(static_cast<uint32_t>(i), kept_pos[i]);
+        }
+        if (kept_seq[i] >= 0) {
+            cells.seq_add(static_cast<uint32_t>(i), kept_seq[i]);
+        }
     }
 
     return n_keep;

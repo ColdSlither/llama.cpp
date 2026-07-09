@@ -1364,8 +1364,8 @@ static int kvzip_compact(
             if (sort_idx[i] < 50) needle_kept++;
         }
 
-        LLAMA_LOG_INFO(
-            "kvzip: n_used=%d keep=%d needle_kept_in_top10=%d/%d "
+        LLAMA_LOG_WARN(
+            "kvzip-d: n_used=%d keep=%d needle_kept_in_top10=%d/%d "
             "top10_pos=[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d]\n",
             n_kv_used, n_keep, needle_kept, needle_total,
             sort_idx[0],
@@ -1449,7 +1449,7 @@ void llama_kv_cache::kvzip_compress() {
     }
 
     kvzip_counter++;
-    LLAMA_LOG_INFO("kvzip: compress called (counter=%d, trigger=%d)\n", kvzip_counter, kvzip_trigger);
+    LLAMA_LOG_WARN("kvzip-d: compress called (counter=%d, trigger=%d)\n", kvzip_counter, kvzip_trigger);
     if (kvzip_counter < kvzip_trigger) {
         return;
     }

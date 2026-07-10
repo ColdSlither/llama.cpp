@@ -2927,6 +2927,28 @@ private:
                 }
 
                 slot.truncated = true;
+            } else if (params_base.kvzip && slot.prompt.n_tokens() >= params_base.kvzip_trigger) {
+                // Path C kvzip eviction: kept-set + cache shift live in the
+                // internal layer (llama_context::kvzip_evict_slot) so tools/
+                // doesn't need to see llama_kv_cache. We get back a keep-mask
+                // and use it to collapse slot.prompt.tokens.
+                const int n_tokens = (int)slot.prompt.n_tokens();
+                std::vector<int32_t> keep(n_tokens, 0);
+                const int n_discard = llama_kvzip_evict(
+                        ctx_tgt, slot.id, params_base.kvzip_ratio,
+                        params_base.kvzip_min_latest, keep.data());
+                if (n_discard > 0) {
+                    llama_tokens new_tokens = slot.prompt.tokens.get_tokens();
+                    llama_tokens kept;
+                    kept.reserve(n_tokens - n_discard);
+                    for (int i = 0; i < n_tokens; i++) {
+                        if (keep[i]) kept.push_back(new_tokens[i]);
+                    }
+                    slot.prompt.tokens.clear();
+                    slot.prompt.tokens.insert(kept);
+                    SLT_WRN(slot, "kvzip: evicted %d/%d tokens\n", n_discard, n_tokens);
+                    slot.truncated = true;
+                }
             }
         });
 

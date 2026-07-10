@@ -185,6 +185,12 @@ public:
 
     // KVzip compression
     void kvzip_compress();
+    // Per-sequence KVzip importance scores (layer-0 K/V magnitude, kvzip paper).
+    // Returns a vector indexed by absolute position for seq_id: scores[p] is the
+    // importance of the token at position p (0 if not occupied by seq_id).
+    // Used by the server to drive eviction via common_context_seq_rm/add (Path C:
+    // ride the ctx-shift coordination instead of mutating the cache directly).
+    std::vector<float> kvzip_scores(llama_seq_id seq_id) const;
     // Setter methods for KVzip/DepthKV/RazorAttention/FastKV/xKV params
     void set_kvzip_enabled(bool v)        { kvzip_enabled = v; }
     void set_kvzip_keep_ratio(float v)    { kvzip_keep_ratio = v; }

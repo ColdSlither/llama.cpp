@@ -230,6 +230,29 @@ private:
     // map the output row index `i` to batch index
     int64_t output_resolve_row(int32_t i) const;
 
+    // Path C kvzip eviction: ride the existing ctx-shift coordination
+    // (seq_rm/seq_add) to drop low-importance tokens for seq_id while
+    // keeping per-sequence positions contiguous (Y = X+1). Writes a boolean
+    // keep-mask to `keep` (sized n_tokens) so the caller can collapse its
+    // prompt-token array. Returns the number of tokens evicted, or 0 on
+    // failure / if nothing was evicted.
+    int32_t kvzip_evict_slot(
+            llama_seq_id         seq_id,
+            float               ratio,
+            int32_t             min_latest,
+            std::vector<bool> & keep);
+
+public:
+    // Public wrapper around kvzip_evict_slot (for the llama_kvzip_evict
+    // C API). Returns the number of tokens evicted, or 0.
+    int32_t kvzip_evict(
+            llama_seq_id seq_id,
+            float       ratio,
+            int32_t     min_latest,
+            std::vector<bool> & keep) {
+        return kvzip_evict_slot(seq_id, ratio, min_latest, keep);
+    }
+
     // async-copy enabled layer-input tensors (per cparams.output_layer_inp)
     // from backend into host-side embd_layer_inp buffers
     void extract_layer_inputs(const llm_graph_result * res, size_t token_offset, size_t n_tokens);

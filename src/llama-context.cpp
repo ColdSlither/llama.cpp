@@ -2312,29 +2312,104 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max);
 
-    // KVzip: compress cache after decode.
-    if (cparams.kvzip_enabled) {
-        auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
-        if (!kv) {
-            if (auto * iswa = dynamic_cast<llama_kv_cache_iswa *>(memory.get())) {
-                kv = iswa->get_base();
-            } else if (auto * hyb = dynamic_cast<llama_memory_hybrid *>(memory.get())) {
-                kv = hyb->get_mem_attn();
-            } else if (auto * hyb_iswa = dynamic_cast<llama_memory_hybrid_iswa *>(memory.get())) {
-                auto * attn = hyb_iswa->get_mem_attn();
-                kv = attn ? attn->get_base() : nullptr;
+    // KVzip eviction is now driven by the server in pre_decode() (Path C): it
+    // rides the existing ctx-shift coordination (common_context_seq_rm/add) and
+    // reads per-sequence importance via llama_kv_cache::kvzip_scores(). The old
+    // post-decode kvzip_compress() call here mutated the cache before the batch
+    // was built and desynced from the server's position bookkeeping, so it is
+    // removed. (kvzip_compress/compact remain defined for RazorAttention/xKV
+    // profiling paths that may use them later.)
+
+    return n_outputs_max;
+}
+
+int32_t llama_context::kvzip_evict_slot(
+        llama_seq_id         seq_id,
+        float               ratio,
+        int32_t             min_latest,
+        std::vector<bool> & keep) {
+    // Path C: server-driven eviction riding the ctx-shift coordination.
+    // 1. Score tokens by layer-0 K/V magnitude.
+    // 2. Keep sink (head) + recent (tail) + top-magnitude middle.
+    // 3. Drop the rest, shifting survivors down via seq_rm/seq_add so the
+    //    next batch's positions stay valid (Y = X+1 per sequence).
+    // Returns number of tokens evicted (0 on failure or if nothing to evict).
+
+    auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
+    if (!kv) {
+        if (auto * iswa = dynamic_cast<llama_kv_cache_iswa *>(memory.get())) {
+            kv = iswa->get_base();
+        }
+    }
+    if (!kv || !cparams.kvzip_enabled) {
+        return 0;
+    }
+
+    const llama_pos pos_max = memory->seq_pos_max(seq_id);
+    if (pos_max < 0) {
+        return 0;
+    }
+    const int32_t n_tokens = pos_max + 1;
+
+    const std::vector<float> scores = kv->kvzip_scores(seq_id);
+    if ((int32_t)scores.size() < n_tokens) {
+        return 0;
+    }
+
+    // Keep-set: sink (head) + recent (tail) + top-magnitude middle.
+    const int32_t sink_n   = min_latest > 0 ? min_latest : std::min((int32_t)4, n_tokens);
+    const int32_t recent_n = std::max((int32_t)1, (int32_t)(n_tokens * 0.25f));
+    const int32_t total_keep = std::max(sink_n + recent_n, (int32_t)(n_tokens * ratio));
+    const int32_t mid_budget = std::max((int32_t)0, total_keep - sink_n - recent_n);
+
+    keep.assign(n_tokens, false);
+    for (int32_t i = 0; i < sink_n && i < n_tokens; i++) {
+        keep[i] = true;
+    }
+    for (int32_t i = n_tokens - recent_n; i < n_tokens; i++) {
+        keep[i] = true;
+    }
+    if (mid_budget > 0 && sink_n < n_tokens - recent_n) {
+        std::vector<int32_t> mid_candidates;
+        for (int32_t i = sink_n; i < n_tokens - recent_n; i++) {
+            if (!keep[i]) {
+                mid_candidates.push_back(i);
             }
         }
-        if (kv) {
-            // Lazy profile on first decode with enough tokens (unconditional — functions check internal state)
-            kv->kvzip_compress();
+        if (!mid_candidates.empty()) {
+            const int32_t k = std::min(mid_budget, (int32_t)mid_candidates.size());
+            std::partial_sort(
+                    mid_candidates.begin(), mid_candidates.begin() + k,
+                    mid_candidates.end(),
+                    [&](int32_t a, int32_t b) { return scores[a] > scores[b]; });
+            for (int32_t j = 0; j < k; j++) {
+                keep[mid_candidates[j]] = true;
+            }
         }
     }
 
-    // Lazy RazorAttention/xKV profiling (fires independently of kvzip trigger)
-    // Note: actual profiling is done inside kvzip_compress which has K tensor access.
+    // Count drops, abort if nothing to drop.
+    int32_t n_drop = 0;
+    for (int32_t i = 0; i < n_tokens; i++) {
+        if (!keep[i]) n_drop++;
+    }
+    if (n_drop == 0) {
+        return 0;
+    }
 
-    return n_outputs_max;
+    // Ride ctx-shift coordination: rm each dropped position, then shift
+    // everything above down by 1. Note the upper bound for the shift uses
+    // seq_pos_max to cover the case where the sequence extends beyond n_tokens.
+    int32_t shift_acc = 0;
+    for (int32_t p = 0; p < n_tokens; p++) {
+        if (keep[p]) continue;
+        const int32_t p_cur = p - shift_acc;
+        memory->seq_rm (seq_id, p_cur, p_cur + 1);
+        memory->seq_add(seq_id, p_cur + 1, pos_max + 1 - shift_acc, -1);
+        shift_acc++;
+    }
+
+    return n_drop;
 }
 
 void llama_context::extract_layer_inputs(const llm_graph_result * res, size_t token_offset, size_t n_tokens) {
@@ -4013,6 +4088,26 @@ void llama_memory_seq_add(
     }
 
     mem->seq_add(seq_id, p0, p1, delta);
+}
+
+int32_t llama_kvzip_evict(
+        struct llama_context * ctx,
+          llama_seq_id seq_id,
+                 float   ratio,
+               int32_t   min_latest,
+         int32_t *       keep_mask_out) {
+    if (!ctx) {
+        return 0;
+    }
+    std::vector<bool> keep;
+    const int32_t n_evicted = ctx->kvzip_evict(seq_id, ratio, min_latest, keep);
+    if (keep_mask_out && n_evicted > 0) {
+        const int32_t n = (int32_t)keep.size();
+        for (int32_t i = 0; i < n; i++) {
+            keep_mask_out[i] = keep[i] ? 1 : 0;
+        }
+    }
+    return n_evicted;
 }
 
 void llama_memory_seq_div(

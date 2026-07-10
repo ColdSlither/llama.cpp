@@ -1506,6 +1506,94 @@ void llama_kv_cache::kvzip_compress() {
     }
 }
 
+std::vector<float> llama_kv_cache::kvzip_scores(llama_seq_id seq_id) const {
+    // Return per-absolute-position importance for seq_id, scored on layer 0
+    // K/V magnitude (kvzip paper formulation). Indexed by absolute position;
+    // 0 for positions not occupied by seq_id.
+
+    std::vector<float> scores;
+    if (seq_id < 0 || seq_id >= (llama_seq_id)seq_to_stream.size()) {
+        return scores;
+    }
+
+    const uint32_t stream = seq_to_stream[seq_id];
+    if (stream >= n_stream) {
+        return scores;
+    }
+    const auto & cells = v_cells[stream];
+
+    // Determine position range for this sequence.
+    const llama_pos p_min = cells.seq_pos_min(seq_id);
+    const llama_pos p_max = cells.seq_pos_max(seq_id);
+    if (p_min < 0 || p_max < p_min) {
+        return scores;
+    }
+
+    scores.assign((size_t)p_max + 1, 0.0f);
+
+    // Use layer 0 K/V for scoring (cheap, representative).
+    if (layers.empty() || !layers[0].k || !layers[0].v) {
+        return scores;
+    }
+    const ggml_tensor * k = layers[0].k;
+    const ggml_tensor * v = layers[0].v;
+
+    const int n_embd_k = k->ne[0];
+    const int n_embd_v = v->ne[0];
+
+    std::vector<uint8_t> row_k_bytes(n_embd_k * ggml_type_size(k->type));
+    std::vector<uint8_t> row_v_bytes(n_embd_v * ggml_type_size(v->type));
+    std::vector<float> row_k(n_embd_k);
+    std::vector<float> row_v(n_embd_v);
+
+    for (uint32_t i = 0; i < cells.size(); i++) {
+        if (cells.is_empty(i)) {
+            continue;
+        }
+        if (cells.seq_get(i) != seq_id) {
+            continue;
+        }
+        const llama_pos p = cells.pos_get(i);
+        if (p < 0 || (size_t)p >= scores.size()) {
+            continue;
+        }
+
+        size_t k_row_bytes = ggml_row_size(k->type, n_embd_k);
+        ggml_backend_tensor_get(k, row_k_bytes.data(), i * k->nb[1], k_row_bytes);
+        switch (k->type) {
+            case GGML_TYPE_F32:
+                { float * fp = (float *)row_k_bytes.data(); for (int e = 0; e < n_embd_k; e++) row_k[e] = fp[e]; } break;
+            case GGML_TYPE_F16:
+                ggml_cpu_fp16_to_fp32((ggml_fp16_t *)row_k_bytes.data(), row_k.data(), n_embd_k); break;
+            case GGML_TYPE_BF16:
+                ggml_cpu_bf16_to_fp32((ggml_bf16_t *)row_k_bytes.data(), row_k.data(), n_embd_k); break;
+            default:
+                ggml_backend_tensor_get(k, row_k.data(), i * k->nb[1], k_row_bytes); break;
+        }
+        float sum_k = 0.0f;
+        for (int e = 0; e < n_embd_k; e++) sum_k += row_k[e] * row_k[e];
+
+        size_t v_row_bytes = ggml_row_size(v->type, n_embd_v);
+        ggml_backend_tensor_get(v, row_v_bytes.data(), i * v->nb[1], v_row_bytes);
+        switch (v->type) {
+            case GGML_TYPE_F32:
+                { float * fp = (float *)row_v_bytes.data(); for (int e = 0; e < n_embd_v; e++) row_v[e] = fp[e]; } break;
+            case GGML_TYPE_F16:
+                ggml_cpu_fp16_to_fp32((ggml_fp16_t *)row_v_bytes.data(), row_v.data(), n_embd_v); break;
+            case GGML_TYPE_BF16:
+                ggml_cpu_bf16_to_fp32((ggml_bf16_t *)row_v_bytes.data(), row_v.data(), n_embd_v); break;
+            default:
+                ggml_backend_tensor_get(v, row_v.data(), i * v->nb[1], v_row_bytes); break;
+        }
+        float sum_v = 0.0f;
+        for (int e = 0; e < n_embd_v; e++) sum_v += row_v[e] * row_v[e];
+
+        scores[p] = sqrtf(sum_k) + sqrtf(sum_v);
+    }
+
+    return scores;
+}
+
 //
 // FastKV — token-selective propagation (TSP) + KV retention
 //

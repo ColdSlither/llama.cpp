@@ -773,6 +773,20 @@ extern "C" {
                  llama_pos p1,
                  llama_pos delta);
 
+    // Path C kvzip eviction: drop low-importance tokens for a sequence while
+    // keeping per-sequence positions contiguous (Y = X+1) by riding the
+    // existing ctx-shift coordination (seq_rm + seq_add). Returns the number
+    // of tokens actually evicted, or 0 if nothing was evicted. When non-null,
+    // `keep_mask_out` is filled with 1/0 for each original position (sized
+    // n_tokens) so the caller can collapse any prompt-token array to match
+    // the kept set.
+    LLAMA_API int32_t llama_kvzip_evict(
+            struct llama_context * ctx,
+              llama_seq_id seq_id,
+                     float   ratio,
+                   int32_t   min_latest,
+                 int32_t * keep_mask_out);
+
     // Integer division of the positions by factor of `d > 1`
     // p0 < 0 : [0,  p1]
     // p1 < 0 : [p0, inf)

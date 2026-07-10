@@ -1380,11 +1380,26 @@ static int kvzip_compact(
             n_kv_used > 9 ? sort_idx[9] : -1);
     }
 
-    // Find top-k indices.
+    // Find top-k indices (interior eviction candidates).
     std::vector<int> indices(n_kv_used);
     std::iota(indices.begin(), indices.end(), 0);
     std::partial_sort(indices.begin(), indices.begin() + n_keep, indices.end(),
         [&](int a, int b) { return scores[a] > scores[b]; });
+
+    // --- Safety gate (empirical finding on feature/kv-compression) ---
+    // llama.cpp's decode requires each sequence's positions to be strictly
+    // consecutive (Y = X+1). Any eviction (interior OR tail) drops tokens a
+    // later turn depends on, breaking that invariant and aborting decode with
+    // "Invalid input batch". The current compaction also front-packs K/V rows
+    // while re-marking cells with absolute positions, which desyncs the cache.
+    // Until a position-remap-aware eviction lands, treat ANY drop as unsafe and
+    // make this round a no-op. This keeps --kvzip enableable without corrupting
+    // the cache (safe equivalent of disabling eviction).
+    if (n_drop > 0) {
+        LLAMA_LOG_WARN("kvzip-d: eviction disabled (safe no-op): dropping tokens "
+                       "breaks sequence position contiguity under llama.cpp decode\n");
+        return n_kv_used;
+    }
 
     // --- Rearrange K/V by moving top-scored rows to front ---
     // Use ggml_nbytes for correct total size (handles padding/quantization)
@@ -1417,23 +1432,22 @@ static int kvzip_compact(
     ggml_backend_tensor_set(v, v_new.data(), 0, v_new.size());
 
     // Snapshot kept-cell metadata BEFORE any mutation (avoids in-place aliasing).
-    // NOTE: seq_get() returns -1 for cells with zero sequences (count != 1, assert
-    // stripped in release builds). Such cells are valid KV entries but have no
-    // sequence membership yet (e.g. mid-prefill). Guard the restore below.
-    std::vector<llama_pos>    kept_pos(n_keep);
-    std::vector<llama_seq_id> kept_seq(n_keep);
+    // seq_get() returns -1 for cells with zero/plural sequences; guard below.
+    std::vector<llama_pos>    kept_pos(n_keep, -1);
+    std::vector<llama_seq_id> kept_seq(n_keep, -1);
     for (int i = 0; i < n_keep; i++) {
         int src = indices[i];
-        kept_pos[i] = cells.pos_get(static_cast<uint32_t>(src));
-        kept_seq[i] = cells.seq_get(static_cast<uint32_t>(src));
+        if (!cells.is_empty(static_cast<uint32_t>(src))) {
+            kept_pos[i] = cells.pos_get(static_cast<uint32_t>(src));
+            kept_seq[i] = cells.seq_get(static_cast<uint32_t>(src));
+        }
     }
-    // Clear ALL cells [0, n_kv_used) — both kept (will re-set) and dropped.
+    // Clear ALL cells [0, n_kv_used) then re-mark the front n_keep.
     for (int i = 0; i < n_kv_used; i++) {
-        cells.rm(static_cast<uint32_t>(i));
+        if (!cells.is_empty(static_cast<uint32_t>(i))) {
+            cells.rm(static_cast<uint32_t>(i));
+        }
     }
-    // Re-mark the front n_keep with snapshot positions + sequence membership.
-    // Guard: skip pos_set/seq_add for cells whose snapshot was invalid (-1),
-    // i.e. cells that had no position or no sequence at snapshot time.
     for (int i = 0; i < n_keep; i++) {
         if (kept_pos[i] >= 0) {
             cells.pos_set(static_cast<uint32_t>(i), kept_pos[i]);
@@ -1470,10 +1484,13 @@ void llama_kv_cache::kvzip_compress() {
         }
 
         // Use stream 0 cells to determine used count.
+        // NOTE: pos_get() asserts the cell is non-empty; iterate with is_empty()
+        // instead so we correctly count only populated cells without tripping
+        // the debug assertion on empty cells (pos[i] == -1).
         const auto & cells = v_cells[0];
         int n_used = 0;
         for (size_t i = 0; i < cells.size(); i++) {
-            if (cells.pos_get((uint32_t)i) >= 0) {
+            if (!cells.is_empty((uint32_t)i)) {
                 n_used++;
             }
         }
@@ -1517,7 +1534,7 @@ void llama_kv_cache::fastkv_select_prefill() {
     const auto & cells = v_cells[0];
     int n_used = 0;
     for (size_t i = 0; i < cells.size(); i++) {
-        if (cells.pos_get((uint32_t)i) >= 0) {
+        if (!cells.is_empty((uint32_t)i)) {
             n_used++;
         }
     }
@@ -1541,7 +1558,7 @@ void llama_kv_cache::fastkv_compress() {
         const auto & cells = v_cells[0];
         int n_used = 0;
         for (size_t i = 0; i < cells.size(); i++) {
-            if (cells.pos_get((uint32_t)i) >= 0) {
+            if (!cells.is_empty((uint32_t)i)) {
                 n_used++;
             }
         }

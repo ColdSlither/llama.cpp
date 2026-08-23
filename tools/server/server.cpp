@@ -198,6 +198,7 @@ int llama_server(int argc, char ** argv) {
         ctx_http.post("/models",               ex_wrapper(models_routes->post_router_models));
         ctx_http.post("/models/load",          ex_wrapper(models_routes->post_router_models_load));
         ctx_http.post("/models/unload",        ex_wrapper(models_routes->post_router_models_unload));
+        ctx_http.post("/models/ngl",           ex_wrapper(models_routes->post_router_models_ngl));
         ctx_http.get ("/models/sse",           ex_wrapper(models_routes->get_router_models_sse));
         ctx_http.del ("/models",               ex_wrapper(models_routes->del_router_models));
     }
@@ -209,6 +210,11 @@ int llama_server(int argc, char ** argv) {
     ctx_http.post("/props",                    ex_wrapper(routes.post_props));
     ctx_http.get ("/models",                   ex_wrapper(routes.get_models)); // public endpoint (no API key check)
     ctx_http.get ("/v1/models",                ex_wrapper(routes.get_models)); // public endpoint (no API key check)
+    // direct-mode elastic residency knob: reload the single model with a new n_gpu_layers.
+    // Queue-routed (SERVER_TASK_TYPE_RELOAD_NGL) so the reload is serialized with
+    // in-flight tasks — never reloads on the HTTP thread. Bypasses router
+    // child-spawn (broken on this branch) by reloading in-process.
+    ctx_http.post("/models/ngl",               ex_wrapper(routes.post_ngl));
     ctx_http.post("/completion",               ex_wrapper(routes.post_completions)); // legacy
     ctx_http.post("/completions",              ex_wrapper(routes.post_completions));
     ctx_http.post("/v1/completions",           ex_wrapper(routes.post_completions_oai));

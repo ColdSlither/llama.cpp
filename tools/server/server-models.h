@@ -222,6 +222,11 @@ public:
     void unload(const std::string & name);
     void unload_all();
 
+    // change the number of GPU layers a model uses at runtime
+    // updates the model's preset and, if the model is running, reloads it
+    // thread-safe
+    void set_n_gpu_layers(const std::string & name, int ngl);
+
     struct update_status_args {
         server_model_status status;
         int exit_code = 0; // only valid if status == UNLOADED
@@ -308,6 +313,7 @@ struct server_models_routes {
     server_http_context::handler_t get_router_models;
     server_http_context::handler_t post_router_models_load;
     server_http_context::handler_t post_router_models_unload;
+    server_http_context::handler_t post_router_models_ngl;
     // management API
     server_http_context::handler_t get_router_models_sse;
     server_http_context::handler_t post_router_models;

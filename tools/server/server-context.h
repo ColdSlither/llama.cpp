@@ -89,6 +89,9 @@ struct server_context {
     // returns true on success
     bool load_model(common_params & params);
 
+    // elastic n_gpu_layers reload is queue-routed (SERVER_TASK_TYPE_RELOAD_NGL,
+    // handled on the main loop thread) — see /models/ngl in init_routes()
+
     // this function will block main thread until termination
     void start_loop();
 
@@ -138,6 +141,7 @@ struct server_routes {
     server_http_context::handler_t post_chat_completions;
     server_http_context::handler_t post_chat_completions_tok;
     server_http_context::handler_t post_control;
+    server_http_context::handler_t post_ngl; // elastic residency: POST /models/ngl
     server_http_context::handler_t post_responses_oai;
     server_http_context::handler_t post_responses_tok_oai;
     server_http_context::handler_t post_transcriptions_oai;

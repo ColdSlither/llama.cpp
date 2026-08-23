@@ -1090,6 +1090,38 @@ void server_models::unload_all() {
     }
 }
 
+void server_models::set_n_gpu_layers(const std::string & name, int ngl) {
+    bool was_running = false;
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        auto it = mapping.find(name);
+        if (it == mapping.end()) {
+            throw std::runtime_error("model name=" + name + " is not found");
+        }
+        // update the preset so the next (re)load renders --n-gpu-layers N
+        it->second.meta.preset.set_option(ctx_preset, "LLAMA_ARG_N_GPU_LAYERS", std::to_string(ngl));
+        was_running = it->second.meta.is_running();
+    }
+
+    if (!was_running) {
+        SRV_INF("model name=%s is not running; n_gpu_layers=%d applied on next load\n",
+                name.c_str(), ngl);
+        return;
+    }
+
+    SRV_INF("model name=%s changing n_gpu_layers=%d, reloading\n", name.c_str(), ngl);
+
+    // reload so the new ngl takes effect (the preset was updated above)
+    unload(name);
+    wait(name, [](const server_model_meta & m) {
+        return m.status == SERVER_MODEL_STATUS_UNLOADED;
+    });
+    load(name);
+    wait(name, [](const server_model_meta & m) {
+        return m.status != SERVER_MODEL_STATUS_LOADING;
+    });
+}
+
 void server_models::update_status(const std::string & name, const update_status_args & args) {
     std::unique_lock<std::mutex> lk(mutex);
     auto it = mapping.find(name);
@@ -1788,6 +1820,30 @@ void server_models_routes::init_routes() {
         }
         models.unload(model->name);
         res_ok(res, {{"success", true}});
+        return res;
+    };
+
+    this->post_router_models_ngl = [this](const server_http_req & req) {
+        auto res = std::make_unique<server_http_res>();
+        json body = json::parse(req.body);
+        std::string name = json_value(body, "model", std::string());
+        int ngl = json_value(body, "n_gpu_layers", -1);
+        auto meta = models.get_meta(name);
+        if (!meta.has_value()) {
+            res_err(res, format_error_response("model is not found", ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+        if (ngl < 0) {
+            res_err(res, format_error_response("n_gpu_layers must be a non-negative integer", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        try {
+            models.set_n_gpu_layers(name, ngl);
+        } catch (const std::exception & e) {
+            res_err(res, format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        res_ok(res, {{"success", true}, {"model", name}, {"n_gpu_layers", ngl}});
         return res;
     };
 

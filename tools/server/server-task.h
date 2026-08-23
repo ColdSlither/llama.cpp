@@ -27,6 +27,7 @@ enum server_task_type {
     SERVER_TASK_TYPE_SLOT_ERASE,
     SERVER_TASK_TYPE_GET_LORA,
     SERVER_TASK_TYPE_SET_LORA,
+    SERVER_TASK_TYPE_RELOAD_NGL, // elastic residency: reload model with a new n_gpu_layers (processed on the main loop thread)
 };
 
 // TODO: change this to more generic "response_format" to replace the "format_response_*" in server-common
@@ -85,6 +86,9 @@ struct task_params {
     // realtime control (SERVER_TASK_TYPE_CONTROL)
     std::string        control_action;
     std::string        control_cmpl_id;
+
+    // elastic residency (SERVER_TASK_TYPE_RELOAD_NGL)
+    int32_t            reload_ngl = -1;
 
     // per-request parameters for chat parsing
     common_chat_parser_params chat_parser_params;

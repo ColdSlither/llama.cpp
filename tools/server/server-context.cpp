@@ -2463,6 +2463,119 @@ private:
                         }
                     }
                 } break;
+            case SERVER_TASK_TYPE_RELOAD_NGL:
+                {
+                    // elastic residency knob: reload the model with a new n_gpu_layers.
+                    // Runs on the main loop thread, serialized with all other task
+                    // processing — never call destroy()/load_model() from elsewhere.
+                    auto res = std::make_unique<server_task_result_control>();
+                    res->id = task.id;
+
+                    const int ngl = task.params.reload_ngl;
+
+                    // Refuse while any slot is generating: destroy() would free the
+                    // context under live completions. Retry when idle.
+                    bool any_busy = false;
+                    for (auto & slot : slots) {
+                        if (slot.is_processing()) {
+                            any_busy = true;
+                            break;
+                        }
+                    }
+                    if (any_busy) {
+                        SRV_WRN("%s", "elastic ngl: reload refused, completions in flight\n");
+                        res->success = false;
+                        res->message = "cannot change n_gpu_layers while completions are in flight; retry when idle";
+                        queue_results.send(std::move(res));
+                        break;
+                    }
+
+                    // Pre-validate the candidate n_gpu_layers against free VRAM BEFORE
+                    // destroying the current model. A failed load leaks its partial CUDA
+                    // allocations, so retrying a smaller ngl afterwards also OOMs and
+                    // leaves the server model-less. Estimate first, reject cleanly if the
+                    // requested residency does not fit.
+                    {
+                        const size_t margin = 256ull * 1024 * 1024; // 256 MiB headroom
+
+                        common_params params_probe = params_base;
+                        params_probe.n_gpu_layers = ngl;
+
+                        auto mparams_probe = common_model_params_to_llama(params_probe);
+                        auto cparams_probe = common_context_params_to_llama(params_probe);
+
+                        std::vector<ggml_backend_dev_t> devs;
+                        uint32_t hp_ngl = 0;
+                        uint32_t hp_nct = 0;
+                        uint32_t hp_nex = 0;
+
+                        bool fits = true;
+                        try {
+                            auto dmd = common_get_device_memory_data(
+                                params_base.model.path.c_str(), &mparams_probe, &cparams_probe,
+                                devs, hp_ngl, hp_nct, hp_nex, GGML_LOG_LEVEL_ERROR);
+
+                            for (const auto & d : dmd) {
+                                const size_t need = d.model + d.context + d.compute + margin;
+                                if ((int64_t) need > d.free) {
+                                    fits = false;
+                                    break;
+                                }
+                            }
+                        } catch (const std::exception & e) {
+                            // measurement failed (e.g. model unreadable) — fall through and
+                            // let load_model() surface the real error rather than guessing
+                            SRV_WRN("elastic ngl: pre-flight memory estimate failed (%s); attempting load\n", e.what());
+                            fits = true;
+                        }
+
+                        if (!fits) {
+                            SRV_WRN("elastic ngl: n_gpu_layers=%d rejected, does not fit free device memory\n", ngl);
+                            res->success = false;
+                            res->message = "n_gpu_layers=" + std::to_string(ngl) + " would not fit free device memory; choose a smaller value";
+                            queue_results.send(std::move(res));
+                            break;
+                        }
+                    }
+
+                    const int ngl_prev = params_base.n_gpu_layers;
+
+                    common_params params = params_base;
+                    params.n_gpu_layers = ngl;
+
+                    SRV_INF("elastic ngl: reloading with n_gpu_layers=%d (was %d)\n", ngl, ngl_prev);
+
+                    destroy();
+
+                    bool ok = load_model(params);
+
+                    if (!ok && ngl != ngl_prev) {
+                        // The new residency failed to load (e.g. too many GPU layers
+                        // for free VRAM). Restore the previous residency rather than
+                        // leaving the server model-less.
+                        SRV_WRN("elastic ngl: load with n_gpu_layers=%d failed; restoring %d\n", ngl, ngl_prev);
+                        // The failed load already allocated its model weights (llama_init
+                        // holds the partially-loaded model). Free it BEFORE the restore
+                        // load, or the restore's allocation OOMs against the leaked weights.
+                        destroy();
+                        common_params params_prev = params_base;
+                        params_prev.n_gpu_layers = ngl_prev;
+                        ok = load_model(params_prev);
+                        if (ok) {
+                            res->success = false;
+                            res->message = "reload with n_gpu_layers=" + std::to_string(ngl)
+                                         + " failed; restored previous n_gpu_layers=" + std::to_string(ngl_prev);
+                            queue_results.send(std::move(res));
+                            break;
+                        }
+                    }
+
+                    res->success = ok;
+                    if (!ok) {
+                        res->message = "model reload failed; server has no model loaded";
+                    }
+                    queue_results.send(std::move(res));
+                } break;
             case SERVER_TASK_TYPE_CONTROL:
                 {
                     auto res = std::make_unique<server_task_result_control>();
@@ -3995,6 +4108,13 @@ bool server_context::load_model(common_params & params) {
     return impl->load_model(params);
 }
 
+// NOTE: elastic n_gpu_layers reload is intentionally NOT a direct call here.
+// Freeing/reloading the model must be serialized with the main loop (in-flight
+// tasks and update_slots touch model_tgt/ctx_tgt); the queue-routed path is
+// server_context_impl::process_single_task's SERVER_TASK_TYPE_RELOAD_NGL case,
+// invoked via the /models/ngl route. Calling destroy()/load_model() from an
+// HTTP handler thread is a use-after-free race.
+
 void server_context::start_loop() {
     auto & params = impl->params_base;
     impl->queue_tasks.start_loop(params.sleep_idle_seconds * 1000);
@@ -4796,6 +4916,55 @@ void server_routes::init_routes() {
             return res;
         }
         res->ok(result->to_json());
+        return res;
+    };
+
+    // elastic residency knob: change n_gpu_layers of the running model.
+    // Posts SERVER_TASK_TYPE_RELOAD_NGL so the reload executes on the main
+    // loop thread, serialized with in-flight tasks (calling destroy() from
+    // the HTTP thread would be a use-after-free race).
+    this->post_ngl = [this](const server_http_req & req) {
+        auto res = create_response();
+        json body = json::parse(req.body);
+
+        if (!body.contains("n_gpu_layers") || !body["n_gpu_layers"].is_number_integer()) {
+            res->error(format_error_response("n_gpu_layers (integer) is required", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        const int ngl = body["n_gpu_layers"].get<int>();
+        if (ngl < 0) {
+            res->error(format_error_response("n_gpu_layers must be a non-negative integer", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        auto & rd = res->rd;
+        {
+            server_task task(SERVER_TASK_TYPE_RELOAD_NGL);
+            task.id               = rd.get_new_id();
+            task.params.reload_ngl = ngl;
+            rd.post_task(std::move(task));
+        }
+
+        auto result = rd.next(req.should_stop);
+        if (!result) {
+            GGML_ASSERT(req.should_stop());
+            return res;
+        }
+        if (result->is_error()) {
+            res->error(result->to_json());
+            return res;
+        }
+        const json out = result->to_json();
+        if (!out.value("success", false)) {
+            // task-level failure: busy slots, reload failure, or fallback restore
+            const std::string message = out.value("message", std::string("model reload failed"));
+            const error_type type = message.find("in flight") != std::string::npos
+                                 ? ERROR_TYPE_UNAVAILABLE   // busy — retry when idle
+                                 : ERROR_TYPE_SERVER;       // reload genuinely failed
+            res->error(format_error_response(message, type));
+            return res;
+        }
+        res->ok({{"success", true}, {"n_gpu_layers", ngl}});
         return res;
     };
 

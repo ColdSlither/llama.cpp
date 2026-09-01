@@ -348,6 +348,22 @@ static ggml_cuda_device_info ggml_cuda_init() {
                       device_vram_mib);
 #else
         info.devices[id].smpbo = prop.sharedMemPerBlockOptin;
+        // CUDA 13 + Blackwell sm_120 (driver 580): the runtime fills
+        // sharedMemPerBlockOptin with a corrupted value (4294967297 =
+        // 0x100000001), which poisons every CUDA_SET_SHARED_MEMORY_LIMIT
+        // call — first seen as "SOFT_MAX failed / invalid argument" on
+        // qwen3moe warmup (C1). The device attribute reports the true
+        // opt-in limit (101376 = 99KB on sm_120), so prefer it whenever
+        // the struct field is not a sane per-block value (max today is
+        // 227KB on sm_90/sm_100).
+        if (info.devices[id].smpbo > 232448) {
+            int optin = 0;
+            if (cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, physical_id) == cudaSuccess && optin > 0) {
+                GGML_LOG_WARN("  Device %d: sharedMemPerBlockOptin reported %zu (corrupted), using device attribute %d instead\n",
+                              id, info.devices[id].smpbo, optin);
+                info.devices[id].smpbo = optin;
+            }
+        }
         info.devices[id].cc = 100*prop.major + 10*prop.minor;
         GGML_LOG_INFO("  Device %d: %s, compute capability %d.%d, VMM: %s, VRAM: %zu MiB\n",
                       id, prop.name, prop.major, prop.minor, device_vmm ? "yes" : "no",

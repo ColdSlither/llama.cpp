@@ -1,0 +1,2 @@
+0.00.023.528 W   Device 0: sharedMemPerBlockOptin reported 4294967297 (corrupted), using device attribute 101376 instead
+[ Prompt: 157.0 t/s | Generation: 68.6 t/s ]

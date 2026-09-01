@@ -1,0 +1,4 @@
+0.00.027.200 W   Device 0: sharedMemPerBlockOptin reported 4294967297 (corrupted), using device attribute 101376 instead
+> def fib(n):
+def fib(n):
+[ Prompt: 126.3 t/s | Generation: 113.6 t/s ]

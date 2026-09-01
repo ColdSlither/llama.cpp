@@ -51,5 +51,5 @@ The guard fires on startup in every run:
 
 ## Files
 - c1-v1-llama-cli.txt — V1 signal (guard + fib + timing)
-- c1-v2-server.log — V2 full server log
+- c1-v2-server.txt — V2 full server log (renamed .txt to bypass repo *.log ignore)
 - c1-v3-dense.txt — V3 signal (guard + timing)

@@ -1,0 +1,21 @@
+0.00.025.474 W   Device 0: sharedMemPerBlockOptin reported 4294967297 (corrupted), using device attribute 101376 instead
+0.00.061.412 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.062.999 W srv  llama_server: -----------------
+0.00.063.008 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.063.009 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.063.010 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.063.011 W srv  llama_server: -----------------
+0.00.064.558 I srv    load_model: loading model '/mnt/thoth/models/llm/gguf/Qwen3-Coder-30B-A3B-Instruct-Q3_K_S.gguf'
+0.00.064.569 I srv    load_model: kvzip: params_base.kvzip=0
+0.01.139.347 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.03.363.677 I cmn          init: llama threadpool init, n_threads = 10
+0.03.427.782 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 4096, kv_unified = 'true'
+0.03.435.937 I srv  llama_server: model loaded
+0.03.435.944 I srv  llama_server: listening on http://127.0.0.1:8092
+0.04.984.632 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.04.984.829 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.06.271.170 I slot print_timing: id  3 | task 0 | prompt eval time =     827.86 ms /    24 tokens (   34.49 ms per token,    28.99 tokens per second)
+0.06.271.174 I slot print_timing: id  3 | task 0 |        eval time =     458.41 ms /    59 tokens (    7.90 ms per token,   126.52 tokens per second)
+0.06.271.174 I slot print_timing: id  3 | task 0 |       total time =    1286.27 ms /    83 tokens
+0.06.271.179 I slot print_timing: id  3 | task 0 |    graphs reused =         58
+0.06.271.215 I slot      release: id  3 | task 0 | stop processing: n_tokens = 82, truncated = 0

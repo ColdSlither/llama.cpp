@@ -1733,7 +1733,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_env("LLAMA_ARG_KVZIP_RATIO").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
         {"--kvzip-trigger"}, "N",
-        string_format("KVzip compression trigger in decode calls (default: %d)", params.kvzip_trigger),
+        string_format("KVzip minimum context size before compression may fire, in tokens (default: %d)", params.kvzip_trigger),
         [](common_params & params, int value) {
             params.kvzip_trigger = value;
         }

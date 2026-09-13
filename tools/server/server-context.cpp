@@ -2967,11 +2967,19 @@ private:
                 }
 
                 slot.truncated = true;
-            } else if (params_base.kvzip && slot.prompt.n_tokens() >= params_base.kvzip_trigger) {
+            } else if (params_base.kvzip
+                    && slot.state == SLOT_STATE_GENERATING
+                    && slot.prompt.n_tokens() + 2 >= slot.n_ctx
+                    && slot.prompt.n_tokens() >= params_base.kvzip_trigger) {
                 // Path C kvzip eviction: kept-set + cache shift live in the
                 // internal layer (llama_context::kvzip_evict_slot) so tools/
                 // doesn't need to see llama_kv_cache. We get back a keep-mask
                 // and use it to collapse slot.prompt.tokens.
+                //
+                // Gated on SLOT_STATE_GENERATING and firing one token ahead of
+                // the ctx-shift branch above. Evicting during prefill reset the
+                // prompt mid-prefill every round, so the re-fed batch never
+                // reached the end and the slot looped until the client timed out.
                 const int n_tokens = (int)slot.prompt.n_tokens();
                 std::vector<int32_t> keep(n_tokens, 0);
                 const int n_discard = llama_kvzip_evict(

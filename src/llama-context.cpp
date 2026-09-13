@@ -2327,6 +2327,10 @@ int32_t llama_context::kvzip_evict_slot(
     }
 
     // Keep-set: sink (head) + recent (tail) + top-magnitude middle.
+    // Recency protection on Path C is structural: the keep-set always retains the
+    // sink and the most recent quarter of the context, so a score-side position
+    // bias is not consumed here. kvzip_pos_bias applies to the legacy
+    // kvzip_compact path only.
     const int32_t sink_n   = min_latest > 0 ? min_latest : std::min((int32_t)4, n_tokens);
     const int32_t recent_n = std::max((int32_t)1, (int32_t)(n_tokens * 0.25f));
     const int32_t total_keep = std::max(sink_n + recent_n, (int32_t)(n_tokens * ratio));

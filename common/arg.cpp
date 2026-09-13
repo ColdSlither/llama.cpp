@@ -1747,7 +1747,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_env("LLAMA_ARG_KVZIP_MIN_LATEST").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
         {"--kvzip-bias"}, "F",
-        string_format("KVzip score position bias (0 = off, default: %.2f)", params.kvzip_pos_bias),
+        string_format("KVzip score position bias for the legacy kvzip_compact path only; no effect on Path C server-driven eviction (0 = off, default: %.2f)", params.kvzip_pos_bias),
         [](common_params & params, const std::string & value) {
             params.kvzip_pos_bias = std::stof(value);
         }
